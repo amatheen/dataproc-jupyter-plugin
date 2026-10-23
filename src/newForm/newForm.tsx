@@ -1,25 +1,24 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { JupyterLab } from '@jupyterlab/application';
-import { IThemeManager } from '@jupyterlab/apputils';
-import {
-  Box,
-  Button,
-  Checkbox,
-  FormControl,
-  FormControlLabel,
-  FormGroup,
-  FormHelperText,
-  FormLabel,
-  Radio,
-  RadioGroup,
-  Stack,
-  TextField,
-  Typography
-} from '@mui/material';
+import { IThemeManager, Notification } from '@jupyterlab/apputils';
 import { DataprocWidget } from '../controls/DataprocWidget';
+// Backend API utilities for fetching GCP credentials, projects, and regions
+import { authApi } from '../utils/utils';
+import { projectListAPI } from '../utils/projectService';
+import { useRegion } from '../utils/regionService';
+import '../../style/newForm.css';
+
+/**
+ * Regex validation for the Name field:
+ * Must start with a lowercase letter, contain only lowercase letters, numbers,
+ * or hyphens, be 3–63 characters long, and end with a letter or number.
+ */
+const NAME_REGEX = /^[a-z][a-z0-9-]{1,61}[a-z0-9]$/;
 
 interface IFormErrors {
   name?: string;
+  projectId?: string;
+  region?: string;
   features?: string;
   targetDate?: string;
 }
@@ -30,6 +29,13 @@ export const NewFormComponent = ({
   app: JupyterLab;
 }): React.JSX.Element => {
   const [name, setName] = useState<string>('');
+  const [nameTouched, setNameTouched] = useState<boolean>(false);
+  // State for Project ID and Region populated from backend APIs
+  const [projectId, setProjectId] = useState<string>('');
+  const [projectList, setProjectList] = useState<string[]>([]);
+  const [isLoadingProjects, setIsLoadingProjects] = useState<boolean>(false);
+  const [region, setRegion] = useState<string>('');
+
   const [environment, setEnvironment] = useState<string>('Development');
   const [features, setFeatures] = useState<{
     autoscaling: boolean;
@@ -43,6 +49,51 @@ export const NewFormComponent = ({
   const [targetDate, setTargetDate] = useState<string>('');
   const [errors, setErrors] = useState<IFormErrors>({});
 
+  // Hook that fetches available GCP regions for the selected projectId from backend API
+  const regions = useRegion(projectId);
+
+  // Fetch initial project_id/region_id from auth credentials and the full project list on mount
+  useEffect(() => {
+    let isMounted = true;
+    const loadInitialProjectAndRegion = async () => {
+      setIsLoadingProjects(true);
+      try {
+        const [credentials, projects] = await Promise.all([
+          authApi(),
+          projectListAPI('')
+        ]);
+        if (!isMounted) {
+          return;
+        }
+        if (credentials?.project_id) {
+          setProjectId(credentials.project_id);
+          // Ensure the currently configured project is included in the dropdown options
+          if (!projects.includes(credentials.project_id)) {
+            setProjectList([credentials.project_id, ...projects]);
+          } else {
+            setProjectList(projects);
+          }
+        } else {
+          setProjectList(projects);
+        }
+        if (credentials?.region_id) {
+          setRegion(credentials.region_id);
+        }
+      } catch (error) {
+        console.error('Failed to load project/region configuration:', error);
+      } finally {
+        if (isMounted) {
+          setIsLoadingProjects(false);
+        }
+      }
+    };
+
+    loadInitialProjectAndRegion();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const getTodayString = (): string => {
     const now = new Date();
     const year = now.getFullYear();
@@ -51,193 +102,333 @@ export const NewFormComponent = ({
     return `${year}-${month}-${day}`;
   };
 
-  const validate = (): boolean => {
-    const newErrors: IFormErrors = {};
-
-    if (!name.trim()) {
-      newErrors.name = 'Name is required and cannot be empty.';
+  // Validate Name against non-empty and regex requirements
+  const validateName = (value: string): string | undefined => {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return 'Name is required and cannot be empty.';
     }
-
-    const hasSelectedFeature = Object.values(features).some(Boolean);
-    if (!hasSelectedFeature) {
-      newErrors.features = 'Please select at least one feature.';
+    if (!NAME_REGEX.test(trimmed)) {
+      return 'Name must be 3–63 characters, start with a lowercase letter, end with a letter or number, and contain only lowercase letters, numbers, or hyphens.';
     }
+    return undefined;
+  };
 
-    if (!targetDate) {
-      newErrors.targetDate = 'Target Execution Date is required.';
-    } else if (targetDate < getTodayString()) {
-      newErrors.targetDate = 'Target Execution Date cannot be in the past.';
-    }
+  const handleNameChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const newValue = event.target.value;
+    setName(newValue);
+    setErrors(prev => ({
+      ...prev,
+      name: validateName(newValue)
+    }));
+  };
 
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+  // Update Project ID and reset Region when a new project is selected
+  const handleProjectChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const newProjectId = event.target.value;
+    setProjectId(newProjectId);
+    setRegion('');
+    setErrors(prev => ({
+      ...prev,
+      projectId: newProjectId ? undefined : 'Project ID is required.'
+    }));
+  };
+
+  const handleRegionChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const newRegion = event.target.value;
+    setRegion(newRegion);
+    setErrors(prev => ({
+      ...prev,
+      region: newRegion ? undefined : 'Region is required.'
+    }));
   };
 
   const handleFeatureChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const { name: featureName, checked } = event.target;
-    setFeatures(prev => ({
-      ...prev,
+    const updatedFeatures = {
+      ...features,
       [featureName]: checked
+    };
+    setFeatures(updatedFeatures);
+    const hasSelectedFeature = Object.values(updatedFeatures).some(Boolean);
+    setErrors(prev => ({
+      ...prev,
+      features: hasSelectedFeature
+        ? undefined
+        : '* At least one feature needs to be chosen'
     }));
-    if (errors.features) {
-      setErrors(prev => ({ ...prev, features: undefined }));
+  };
+
+  const handleDateChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const newDate = event.target.value;
+    setTargetDate(newDate);
+    let dateError: string | undefined;
+    if (!newDate) {
+      dateError = 'Target Execution Date is required.';
+    } else if (newDate < getTodayString()) {
+      dateError = 'Target Execution Date cannot be in the past.';
     }
+    setErrors(prev => ({
+      ...prev,
+      targetDate: dateError
+    }));
+  };
+
+  // Keep Submit button disabled by default until all field validations pass
+  const isSubmitDisabled = (): boolean => {
+    const isNameValid = NAME_REGEX.test(name.trim());
+    const isProjectValid = projectId.trim() !== '';
+    const isRegionValid = region.trim() !== '';
+    const hasSelectedFeature = Object.values(features).some(Boolean);
+    const isDateValid = targetDate !== '' && targetDate >= getTodayString();
+
+    return !(
+      isNameValid &&
+      isProjectValid &&
+      isRegionValid &&
+      hasSelectedFeature &&
+      isDateValid
+    );
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!validate()) {
+    if (isSubmitDisabled()) {
       return;
     }
 
-    await app.commands.execute('apputils:notify', {
-      message: 'Data saved successfully',
-      type: 'success',
-      options: {
-        autoClose: 3000
-      }
+    // Show toast notification on submit
+    Notification.emit('Data saved successfully', 'success', {
+      autoClose: 3000
     });
 
-    app.shell.activeWidget?.close();
+    (app.shell.currentWidget ?? app.shell.activeWidget)?.close();
   };
 
+  // Close the opened New Form XYZ tab and return to the Launcher on cancel
   const handleCancel = () => {
-    app.shell.activeWidget?.close();
+    (app.shell.currentWidget ?? app.shell.activeWidget)?.close();
   };
+
+  const hasSelectedFeature = Object.values(features).some(Boolean);
 
   return (
-    <div className="component-level">
-      <Box
-        component="form"
+    <div
+      className="component-level new-form-page-wrapper"
+      style={{ marginLeft: '24px' }}
+    >
+      {/* JupyterLab-style top header bar */}
+      <div className="new-form-header-bar">
+        <h2 className="new-form-header-title">New Form XYZ</h2>
+      </div>
+
+      {/* Native HTML form inside a JupyterLab-styled surface card */}
+      <form
+        className="new-form-container"
         onSubmit={handleSubmit}
         noValidate
-        sx={{ maxWidth: 520, p: 4 }}
       >
-        <Typography variant="h5" sx={{ mb: 3, fontWeight: 500 }}>
-          New Form XYZ
-        </Typography>
+        <div
+          className="new-form-stack"
+          style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}
+        >
+          {/* Name Field with Regex Validation and Red Suggestion Message */}
+          <div className="new-form-field">
+            <label className="new-form-label" htmlFor="new-form-name">
+              Name<span className="new-form-required">*</span>
+            </label>
+            <input
+              id="new-form-name"
+              type="text"
+              className={`new-form-input ${errors.name ? 'input-error' : ''}`}
+              value={name}
+              onFocus={() => setNameTouched(true)}
+              onClick={() => setNameTouched(true)}
+              onChange={handleNameChange}
+              placeholder="e.g. my-dataproc-job-01"
+              required
+            />
+            {nameTouched &&
+              (errors.name ? (
+                <div
+                  className="new-form-error-text"
+                  style={{ color: '#d93025' }}
+                >
+                  {errors.name}
+                </div>
+              ) : (
+                !NAME_REGEX.test(name.trim()) && (
+                  <div
+                    className="new-form-name-suggestion"
+                    style={{ color: '#d93025' }}
+                  >
+                    Lowercase letters, numbers, and hyphens allowed (3–63 chars,
+                    must start with a lowercase letter and end with a letter or
+                    number).
+                  </div>
+                )
+              ))}
+          </div>
 
-        <Stack spacing={3}>
-          {/* Name Field */}
-          <TextField
-            label="Name"
-            required
-            fullWidth
-            value={name}
-            onChange={e => {
-              setName(e.target.value);
-              if (errors.name) {
-                setErrors(prev => ({ ...prev, name: undefined }));
-              }
-            }}
-            error={Boolean(errors.name)}
-            helperText={errors.name}
-          />
+          {/* Project ID Field populated via projectListAPI and authApi */}
+          <div className="new-form-field">
+            <label className="new-form-label" htmlFor="new-form-project">
+              Project ID<span className="new-form-required">*</span>
+            </label>
+            <select
+              id="new-form-project"
+              className={`new-form-select ${errors.projectId ? 'input-error' : ''
+                }`}
+              value={projectId}
+              onChange={handleProjectChange}
+              disabled={isLoadingProjects}
+              required
+            >
+              <option value="">
+                {isLoadingProjects ? 'Loading projects...' : 'Select a Project'}
+              </option>
+              {projectList.map(proj => (
+                <option key={proj} value={proj}>
+                  {proj}
+                </option>
+              ))}
+            </select>
+            {errors.projectId && (
+              <div className="new-form-error-text">{errors.projectId}</div>
+            )}
+          </div>
+
+          {/* Region Field populated dynamically via useRegion(projectId) */}
+          <div className="new-form-field">
+            <label className="new-form-label" htmlFor="new-form-region">
+              Region<span className="new-form-required">*</span>
+            </label>
+            <select
+              id="new-form-region"
+              className={`new-form-select ${errors.region ? 'input-error' : ''
+                }`}
+              value={region}
+              onChange={handleRegionChange}
+              disabled={!projectId || regions.length === 0}
+              required
+            >
+              <option value="">
+                {!projectId
+                  ? 'Select a Project ID first'
+                  : regions.length === 0
+                    ? 'Loading regions...'
+                    : 'Select a Region'}
+              </option>
+              {regions.map(reg => (
+                <option key={reg.name} value={reg.name}>
+                  {reg.name}
+                </option>
+              ))}
+            </select>
+            {errors.region && (
+              <div className="new-form-error-text">{errors.region}</div>
+            )}
+          </div>
 
           {/* Environment Type Radio Buttons */}
-          <FormControl>
-            <FormLabel id="environment-type-label">Environment Type</FormLabel>
-            <RadioGroup
-              aria-labelledby="environment-type-label"
-              name="environment-type"
-              value={environment}
-              onChange={e => setEnvironment(e.target.value)}
-            >
-              <FormControlLabel
-                value="Development"
-                control={<Radio size="small" />}
-                label="Development"
-              />
-              <FormControlLabel
-                value="Staging"
-                control={<Radio size="small" />}
-                label="Staging"
-              />
-              <FormControlLabel
-                value="Production"
-                control={<Radio size="small" />}
-                label="Production"
-              />
-            </RadioGroup>
-          </FormControl>
+          <div className="new-form-field">
+            <span className="new-form-label">Environment Type</span>
+            <div className="new-form-option-group" role="radiogroup">
+              {['Development', 'Staging', 'Production'].map(envOption => (
+                <label key={envOption} className="new-form-option-label">
+                  <input
+                    type="radio"
+                    name="environment-type"
+                    value={envOption}
+                    checked={environment === envOption}
+                    onChange={e => setEnvironment(e.target.value)}
+                  />
+                  {envOption}
+                </label>
+              ))}
+            </div>
+          </div>
 
           {/* Features / Options Checkboxes */}
-          <FormControl
-            required
-            error={Boolean(errors.features)}
-            component="fieldset"
-          >
-            <FormLabel component="legend">Features / Options</FormLabel>
-            <FormGroup>
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    size="small"
-                    checked={features.autoscaling}
-                    onChange={handleFeatureChange}
-                    name="autoscaling"
-                  />
-                }
-                label="Enable Autoscaling"
-              />
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    size="small"
-                    checked={features.logging}
-                    onChange={handleFeatureChange}
-                    name="logging"
-                  />
-                }
-                label="Enable Logging"
-              />
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    size="small"
-                    checked={features.highAvailability}
-                    onChange={handleFeatureChange}
-                    name="highAvailability"
-                  />
-                }
-                label="Enable High Availability"
-              />
-            </FormGroup>
-            {errors.features && (
-              <FormHelperText>{errors.features}</FormHelperText>
+          <div className="new-form-field">
+            <span className="new-form-label">
+              Features / Options<span className="new-form-required">*</span>
+            </span>
+            <div className="new-form-option-group">
+              <label className="new-form-option-label">
+                <input
+                  type="checkbox"
+                  name="autoscaling"
+                  checked={features.autoscaling}
+                  onChange={handleFeatureChange}
+                />
+                Enable Autoscaling
+              </label>
+              <label className="new-form-option-label">
+                <input
+                  type="checkbox"
+                  name="logging"
+                  checked={features.logging}
+                  onChange={handleFeatureChange}
+                />
+                Enable Logging
+              </label>
+              <label className="new-form-option-label">
+                <input
+                  type="checkbox"
+                  name="highAvailability"
+                  checked={features.highAvailability}
+                  onChange={handleFeatureChange}
+                />
+                Enable High Availability
+              </label>
+            </div>
+            {(errors.features || !hasSelectedFeature) && (
+              <div className="new-form-error-text" style={{ color: '#d93025' }}>
+                {errors.features || '* At least one feature needs to be chosen'}
+              </div>
             )}
-          </FormControl>
+          </div>
 
           {/* Target Execution Date */}
-          <TextField
-            label="Target Execution Date"
-            type="date"
-            required
-            fullWidth
-            value={targetDate}
-            onChange={e => {
-              setTargetDate(e.target.value);
-              if (errors.targetDate) {
-                setErrors(prev => ({ ...prev, targetDate: undefined }));
-              }
-            }}
-            InputLabelProps={{ shrink: true }}
-            inputProps={{ min: getTodayString() }}
-            error={Boolean(errors.targetDate)}
-            helperText={errors.targetDate}
-          />
+          <div className="new-form-field">
+            <label className="new-form-label" htmlFor="new-form-target-date">
+              Target Execution Date<span className="new-form-required">*</span>
+            </label>
+            <input
+              id="new-form-target-date"
+              type="date"
+              className={`new-form-input ${errors.targetDate ? 'input-error' : ''
+                }`}
+              value={targetDate}
+              min={getTodayString()}
+              onChange={handleDateChange}
+              required
+            />
+            {errors.targetDate && (
+              <div className="new-form-error-text">{errors.targetDate}</div>
+            )}
+          </div>
 
           {/* Action Buttons */}
-          <Stack direction="row" spacing={2} sx={{ pt: 1 }}>
-            <Button type="submit" variant="contained" color="primary">
+          <div className="new-form-actions">
+            <button
+              type="submit"
+              className="new-form-btn new-form-btn-submit"
+              disabled={isSubmitDisabled()}
+            >
               SUBMIT
-            </Button>
-            <Button type="button" variant="outlined" onClick={handleCancel}>
+            </button>
+            <button
+              type="button"
+              className="new-form-btn new-form-btn-cancel"
+              onClick={handleCancel}
+            >
               CANCEL
-            </Button>
-          </Stack>
-        </Stack>
-      </Box>
+            </button>
+          </div>
+        </div>
+      </form>
     </div>
   );
 };
@@ -254,3 +445,4 @@ export class NewFormWidget extends DataprocWidget {
     return <NewFormComponent app={this.app} />;
   }
 }
+
