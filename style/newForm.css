@@ -1,0 +1,211 @@
+/* Custom JupyterLab-themed CSS styling for New Form XYZ */
+.new-form-page-wrapper {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  padding-left: 24px;
+  background-color: var(--jp-layout-color1);
+  color: var(--jp-ui-font-color0);
+  font-family: var(--jp-ui-font-family, 'Roboto', sans-serif);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+/* JupyterLab-style top header bar */
+.new-form-header-bar {
+  height: 48px;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  padding: 0;
+  background-color: var(--jp-layout-color0);
+  border-bottom: 1px solid var(--jp-border-color2, #e0e0e0);
+}
+
+.new-form-header-title {
+  font-size: 18px;
+  font-weight: 400;
+  line-height: 24px;
+  color: var(--jp-ui-font-color0);
+  margin: 0;
+}
+
+/* Main form card container with JupyterLab surface styling */
+.new-form-container {
+  max-width: 600px;
+  width: 100%;
+  margin: 24px 32px 48px 0;
+  padding: 32px 36px;
+  background-color: var(--jp-layout-color0);
+  border: 1px solid var(--jp-border-color2, #dadce0);
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  box-sizing: border-box;
+}
+
+/* Increased vertical spacing between form fields */
+.new-form-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.new-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.new-form-label {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.1px;
+  color: var(--jp-ui-font-color0);
+}
+
+.new-form-required {
+  color: var(--jp-error-color1, #d93025);
+  margin-left: 3px;
+}
+
+/* JupyterLab-styled text, date, and select inputs */
+.new-form-input,
+.new-form-select {
+  height: 40px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--jp-ui-font-color0);
+  background-color: var(--jp-layout-color0);
+  border: 1px solid var(--jp-border-color1, #bdbdbd);
+  border-radius: 4px;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.new-form-input:hover:not(:disabled),
+.new-form-select:hover:not(:disabled) {
+  border-color: var(--jp-ui-font-color1);
+}
+
+.new-form-input:focus,
+.new-form-select:focus {
+  border-color: var(--jp-brand-color1, #1a73e8);
+  box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.2);
+}
+
+.new-form-input:disabled,
+.new-form-select:disabled {
+  background-color: var(--jp-layout-color2);
+  color: var(--jp-ui-font-color2);
+  cursor: not-allowed;
+}
+
+/* Error border state when field validation fails */
+.new-form-input.input-error,
+.new-form-select.input-error {
+  border-color: var(--jp-error-color1, #d93025);
+}
+
+/* JupyterLab-styled Radio & Checkbox card groups */
+.new-form-option-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 12px 14px;
+  background-color: var(--jp-layout-color1);
+  border: 1px solid var(--jp-border-color2, #e0e0e0);
+  border-radius: 6px;
+}
+
+.new-form-option-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  color: var(--jp-ui-font-color0);
+  cursor: pointer;
+  user-select: none;
+  transition: background-color 0.12s ease;
+}
+
+.new-form-option-label:hover {
+  background-color: var(--jp-layout-color2);
+}
+
+.new-form-option-label input[type='radio'],
+.new-form-option-label input[type='checkbox'] {
+  accent-color: var(--jp-brand-color1, #1a73e8);
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+}
+
+/* Red error & naming suggestion messages */
+.new-form-error-text,
+.new-form-name-suggestion {
+  font-size: 12px;
+  line-height: 16px;
+  color: #d93025 !important;
+  margin-top: 4px;
+}
+
+/* Action button bar with JupyterLab button styling */
+.new-form-actions {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  padding-top: 16px;
+  margin-top: 4px;
+  border-top: 1px solid var(--jp-border-color2, #e0e0e0);
+}
+
+.new-form-btn {
+  height: 36px;
+  padding: 0 20px;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  border-radius: 4px;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.new-form-btn-submit {
+  background-color: var(--jp-brand-color1, #1a73e8);
+  color: var(--jp-ui-inverse-font-color1, #ffffff);
+  cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+.new-form-btn-submit:hover:not(:disabled) {
+  background-color: var(--jp-brand-color0, #1557b0);
+}
+
+.new-form-btn-submit:disabled {
+  background-color: var(--jp-layout-color3, #e0e0e0);
+  color: var(--jp-ui-font-color2, #9e9e9e);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.new-form-btn-cancel {
+  background-color: var(--jp-layout-color0);
+  color: var(--jp-ui-font-color0);
+  border: 1px solid var(--jp-border-color1, #dadce0);
+  cursor: pointer;
+}
+
+.new-form-btn-cancel:hover {
+  background-color: var(--jp-layout-color2);
+}

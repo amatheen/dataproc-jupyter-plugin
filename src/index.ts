@@ -69,6 +69,7 @@ import { RuntimeService } from './runtime/runtimeService';
 import { Notification } from '@jupyterlab/apputils';
 import { BigQueryService } from './bigQuery/bigQueryService';
 import { setupNotificationSystem } from './notifications';
+import { NewFormWidget } from './newForm/newForm';
 
 const iconDpms = new LabIcon({
   name: 'launcher:dpms-icon',
@@ -732,6 +733,26 @@ const extension: JupyterFrontEndPlugin<void> = {
       }
     });
 
+    const createNewFormComponentCommand = 'create-new-form-xyz-component';
+    commands.addCommand(createNewFormComponentCommand, {
+      caption: 'New Form XYZ',
+      label: 'New Form XYZ',
+      // @ts-ignore jupyter lab icon command issue
+      icon: args => (args['isPalette'] ? null : iconCluster),
+      execute: () => {
+        const content = new NewFormWidget(
+          app as JupyterLab,
+          themeManager
+        );
+        const widget = new MainAreaWidget<NewFormWidget>({ content });
+        widget.title.label = 'New Form XYZ';
+        widget.title.icon = iconCluster;
+        widget.title.closable = true;
+        app.shell.add(widget, 'main');
+        app.shell.activateById(widget.id);
+      }
+    });
+
     const createBatchesComponentCommand = 'create-batches-component';
     commands.addCommand(createBatchesComponentCommand, {
       caption: 'Serverless',
@@ -907,6 +928,11 @@ const extension: JupyterFrontEndPlugin<void> = {
         command: createTemplateComponentCommand,
         category: TITLE_LAUNCHER_CATEGORY,
         rank: 3
+      });
+      launcher.add({
+        command: createNewFormComponentCommand,
+        category: TITLE_LAUNCHER_CATEGORY,
+        rank: 4
       });
     }
 
