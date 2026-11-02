@@ -59,7 +59,9 @@ describe('ListNotebookTemplates Component', () => {
     }
   });
 
-  const createMockFactory = (widgetPath: string | null = 'workspace/dir'): any => ({
+  const createMockFactory = (
+    widgetPath: string | null = 'workspace/dir'
+  ): any => ({
     tracker: {
       currentWidget:
         widgetPath !== null
@@ -93,6 +95,26 @@ describe('ListNotebookTemplates Component', () => {
     };
   };
 
+  const mockSingleTemplateAndClick = (
+    index: number,
+    notebookContent: object = { cells: [] }
+  ) => {
+    jest
+      .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
+      .mockImplementation(
+        async (setTemplateList, renderActions, setIsLoading) => {
+          setTemplateList([buildTemplateRow(renderActions, index)]);
+          setIsLoading(false);
+        }
+      );
+
+    return jest
+      .spyOn(NotebookTemplateService, 'handleClickService')
+      .mockImplementation(async (template, downloadNotebook) => {
+        await downloadNotebook(notebookContent, template.url);
+      });
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     consoleErrorSpy = jest
@@ -108,7 +130,7 @@ describe('ListNotebookTemplates Component', () => {
       root.unmount();
     });
     container.remove();
-    consoleErrorSpy.mockRestore();
+    jest.restoreAllMocks();
   });
 
   const renderComponent = async (
@@ -127,7 +149,7 @@ describe('ListNotebookTemplates Component', () => {
   };
 
   it('renders loading spinner while templates are being fetched', async () => {
-    const listSpy = jest
+    jest
       .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
       .mockImplementation(async () => undefined);
 
@@ -135,40 +157,35 @@ describe('ListNotebookTemplates Component', () => {
 
     expect(container.querySelector('[data-testid="loader"]')).not.toBeNull();
     expect(container.textContent).toContain('Loading Notebook Templates');
-    listSpy.mockRestore();
   });
 
   it('renders "No rows to display" when template list is empty after loading completes', async () => {
-    const listSpy = jest
+    jest
       .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
-      .mockImplementation(async (setTemplateList, renderActions, setIsLoading) => {
-        setTemplateList([]);
-        setIsLoading(false);
-      });
+      .mockImplementation(
+        async (setTemplateList, renderActions, setIsLoading) => {
+          setTemplateList([]);
+          setIsLoading(false);
+        }
+      );
 
     await renderComponent();
 
     expect(container.querySelector('.no-data-style')?.textContent).toBe(
       'No rows to display'
     );
-    listSpy.mockRestore();
   });
 
   it('renders templates table and downloads/opens notebook in local path when "Use this template" is clicked', async () => {
     const mockNotebookContent = { cells: [{ cell_type: 'code' }] };
-    const listSpy = jest
-      .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
-      .mockImplementation(async (setTemplateList, renderActions, setIsLoading) => {
-        setTemplateList([buildTemplateRow(renderActions, 1)]);
-        setIsLoading(false);
-      });
-    const clickSpy = jest
-      .spyOn(NotebookTemplateService, 'handleClickService')
-      .mockImplementation(async (template, downloadNotebook) => {
-        await downloadNotebook(mockNotebookContent, template.url);
-      });
+    const clickSpy = mockSingleTemplateAndClick(1, mockNotebookContent);
 
-    await renderComponent(createMockApp(true), createMockFactory('local/folder'));
+    await renderComponent(
+      createMockApp(true),
+      createMockFactory('local/folder')
+    );
+
+    expect(container.querySelector('.filter-cluster-section')).not.toBeNull();
 
     const cells = container.querySelectorAll('td.notebook-template-table-data');
     expect(cells.length).toBe(4);
@@ -196,24 +213,11 @@ describe('ListNotebookTemplates Component', () => {
     expect(mockExecute).toHaveBeenCalledWith('docmanager:open', {
       path: expectedPath
     });
-
-    listSpy.mockRestore();
-    clickSpy.mockRestore();
   });
 
   it('downloads notebook to root path when active file browser path is a GCS (gs:) path', async () => {
     const mockNotebookContent = { cells: [] };
-    const listSpy = jest
-      .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
-      .mockImplementation(async (setTemplateList, renderActions, setIsLoading) => {
-        setTemplateList([buildTemplateRow(renderActions, 2)]);
-        setIsLoading(false);
-      });
-    const clickSpy = jest
-      .spyOn(NotebookTemplateService, 'handleClickService')
-      .mockImplementation(async (template, downloadNotebook) => {
-        await downloadNotebook(mockNotebookContent, template.url);
-      });
+    mockSingleTemplateAndClick(2, mockNotebookContent);
 
     await renderComponent(
       createMockApp(false),
@@ -238,23 +242,10 @@ describe('ListNotebookTemplates Component', () => {
     expect(mockExecute).toHaveBeenCalledWith('docmanager:open', {
       path: expectedPath
     });
-
-    listSpy.mockRestore();
-    clickSpy.mockRestore();
   });
 
   it('logs an error and aborts download when no active file browser widget is found', async () => {
-    const listSpy = jest
-      .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
-      .mockImplementation(async (setTemplateList, renderActions, setIsLoading) => {
-        setTemplateList([buildTemplateRow(renderActions, 3)]);
-        setIsLoading(false);
-      });
-    const clickSpy = jest
-      .spyOn(NotebookTemplateService, 'handleClickService')
-      .mockImplementation(async (template, downloadNotebook) => {
-        await downloadNotebook({ cells: [] }, template.url);
-      });
+    mockSingleTemplateAndClick(3);
 
     await renderComponent(createMockApp(), createMockFactory(null));
 
@@ -271,25 +262,23 @@ describe('ListNotebookTemplates Component', () => {
     );
     expect(mockSave).not.toHaveBeenCalled();
     expect(mockExecute).not.toHaveBeenCalled();
-
-    listSpy.mockRestore();
-    clickSpy.mockRestore();
   });
 
   it('renders PaginationView when templateList contains more than 50 templates', async () => {
-    const listSpy = jest
+    jest
       .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
-      .mockImplementation(async (setTemplateList, renderActions, setIsLoading) => {
-        const manyTemplates = Array.from({ length: 55 }, (_, i) =>
-          buildTemplateRow(renderActions, i)
-        );
-        setTemplateList(manyTemplates);
-        setIsLoading(false);
-      });
+      .mockImplementation(
+        async (setTemplateList, renderActions, setIsLoading) => {
+          const manyTemplates = Array.from({ length: 55 }, (_, i) =>
+            buildTemplateRow(renderActions, i)
+          );
+          setTemplateList(manyTemplates);
+          setIsLoading(false);
+        }
+      );
 
     await renderComponent();
 
     expect(container.querySelector('.pagination-parent-view')).not.toBeNull();
-    listSpy.mockRestore();
   });
 });

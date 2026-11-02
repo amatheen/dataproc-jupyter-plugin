@@ -36,7 +36,11 @@ import NotebookTemplateService from './notebookTemplatesService';
 import { loggedFetch } from '../utils/utils';
 import { NOTEBOOK_TEMPLATES_LIST_URL } from '../utils/const';
 
-const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0));
+const flushPromises = async () => {
+  for (let i = 0; i < 6; i++) {
+    await new Promise<void>(resolve => queueMicrotask(resolve));
+  }
+};
 
 describe('NotebookTemplateService', () => {
   let consoleErrorSpy: jest.SpyInstance;
@@ -49,14 +53,13 @@ describe('NotebookTemplateService', () => {
   });
 
   afterEach(() => {
-    consoleErrorSpy.mockRestore();
+    jest.restoreAllMocks();
   });
 
   describe('listNotebookTemplateAPIService', () => {
     const mockSetTemplateList = jest.fn();
-    const mockRenderActions = jest
-      .fn()
-      .mockReturnValue(React.createElement('div', null, 'use-template'));
+    const mockActionElement = React.createElement('div', null, 'use-template');
+    const mockRenderActions = jest.fn().mockReturnValue(mockActionElement);
     const mockSetIsLoading = jest.fn();
 
     it('fetches templates list, transforms data, and updates state on success', async () => {
@@ -93,18 +96,20 @@ describe('NotebookTemplateService', () => {
         }
       });
       expect(mockRenderActions).toHaveBeenCalledTimes(2);
+      expect(mockRenderActions).toHaveBeenNthCalledWith(1, apiResponse[0]);
+      expect(mockRenderActions).toHaveBeenNthCalledWith(2, apiResponse[1]);
       expect(mockSetTemplateList).toHaveBeenCalledWith([
         {
           category: 'BigQuery',
           name: 'PySpark BigQuery Template',
           description: 'Read and write BigQuery tables using PySpark',
-          actions: expect.anything()
+          actions: mockActionElement
         },
         {
           category: 'GCS',
           name: 'GCS Data Processing',
           description: 'Process files in Cloud Storage',
-          actions: expect.anything()
+          actions: mockActionElement
         }
       ]);
       expect(mockSetIsLoading).toHaveBeenCalledWith(false);

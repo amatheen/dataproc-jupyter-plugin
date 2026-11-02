@@ -33,22 +33,31 @@ jest.mock('../utils/utils', () => ({
   checkConfig: jest.fn()
 }));
 
+const mockListNotebookTemplatesProps = jest.fn();
 jest.mock('./listNotebookTemplates', () => ({
   __esModule: true,
-  default: () => (
-    <div data-testid="mock-list-notebook-templates">
-      Mock ListNotebookTemplates
-    </div>
-  )
+  default: (props: any) => {
+    mockListNotebookTemplatesProps(props);
+    return (
+      <div data-testid="mock-list-notebook-templates">
+        Mock ListNotebookTemplates
+      </div>
+    );
+  }
 }));
 
+const mockLoginErrorProps = jest.fn();
 jest.mock('../utils/loginErrorComponent', () => ({
   __esModule: true,
-  default: ({ loginError, configError }: any) => (
-    <div data-testid="mock-login-error">
-      LoginError: {String(loginError)}, ConfigError: {String(configError)}
-    </div>
-  )
+  default: (props: any) => {
+    mockLoginErrorProps(props);
+    return (
+      <div data-testid="mock-login-error">
+        LoginError: {String(props.loginError)}, ConfigError:{' '}
+        {String(props.configError)}
+      </div>
+    );
+  }
 }));
 
 import React, { act } from 'react';
@@ -59,9 +68,9 @@ import { checkConfig } from '../utils/utils';
 describe('NotebookTemplates Widget and NotebookTemplatesComponent', () => {
   let container: HTMLDivElement;
   let root: Root;
-  const mockApp: any = {};
-  const mockFactory: any = {};
-  const mockSettingRegistry: any = {};
+  const mockApp: any = { id: 'mock-app' };
+  const mockFactory: any = { id: 'mock-factory' };
+  const mockSettingRegistry: any = { id: 'mock-settings' };
   const mockThemeManager: any = {
     theme: 'JupyterLab Light',
     isLight: jest.fn().mockReturnValue(true),
@@ -83,6 +92,7 @@ describe('NotebookTemplates Widget and NotebookTemplatesComponent', () => {
       root.unmount();
     });
     container.remove();
+    jest.restoreAllMocks();
   });
 
   const renderWidget = async () => {
@@ -123,6 +133,14 @@ describe('NotebookTemplates Widget and NotebookTemplatesComponent', () => {
     const errorEl = container.querySelector('[data-testid="mock-login-error"]');
     expect(errorEl).not.toBeNull();
     expect(errorEl?.textContent).toContain('LoginError: true');
+    expect(mockLoginErrorProps).toHaveBeenCalledWith(
+      expect.objectContaining({
+        loginError: true,
+        configError: false,
+        app: mockApp,
+        settingRegistry: mockSettingRegistry
+      })
+    );
     expect(
       container.querySelector('[data-testid="mock-list-notebook-templates"]')
     ).toBeNull();
@@ -142,6 +160,14 @@ describe('NotebookTemplates Widget and NotebookTemplatesComponent', () => {
     const errorEl = container.querySelector('[data-testid="mock-login-error"]');
     expect(errorEl).not.toBeNull();
     expect(errorEl?.textContent).toContain('ConfigError: true');
+    expect(mockLoginErrorProps).toHaveBeenCalledWith(
+      expect.objectContaining({
+        loginError: false,
+        configError: true,
+        app: mockApp,
+        settingRegistry: mockSettingRegistry
+      })
+    );
     expect(
       container.querySelector('[data-testid="mock-list-notebook-templates"]')
     ).toBeNull();
@@ -158,6 +184,11 @@ describe('NotebookTemplates Widget and NotebookTemplatesComponent', () => {
     expect(
       container.querySelector('[data-testid="mock-list-notebook-templates"]')
     ).not.toBeNull();
+    expect(mockListNotebookTemplatesProps).toHaveBeenCalledWith({
+      app: mockApp,
+      themeManager: mockThemeManager,
+      factory: mockFactory
+    });
     expect(container.querySelector('[role="tablist"]')).not.toBeNull();
     expect(
       container.querySelector('[data-testid="mock-login-error"]')
