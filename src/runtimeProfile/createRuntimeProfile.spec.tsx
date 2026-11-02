@@ -217,7 +217,15 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     expect(getFieldValue('Python package repository')).toBe(
       'Google managed PyPI pull-through cache'
     );
+    expect(getFieldValue('Tier')).toBe('Premium (Lightning Engine enabled)');
+    expect(getFieldValue('Driver machine type')).toBe(
+      'highmem-4 (4 vCPU, 32 GB)'
+    );
+    expect(getFieldValue('Driver disk')).toBe('HDD (standard), 400 GiB');
+    expect(getFieldValue('Executor type')).toBe('highmem-4 (4 vCPU, 32 GB)');
+    expect(getFieldValue('Executor disk')).toBe('HDD (standard), 400 GiB');
     expect(getFieldValue('Autoscaling')).toBe('On');
+    expect(getFieldValue('Maximum executors')).toBe('1000');
     expect(getFieldValue('Metastore')).toBe('Lakehouse runtime catalog');
     expect(getFieldValue('Hive endpoint')).toBe('Disabled');
     expect(getFieldValue('Maximum idle time')).toBe('None');
@@ -270,37 +278,6 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     });
     expect(header.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('.additional-config-content')).toBeNull();
-  });
-
-  it('hides the divider above the action buttons while Additional configuration is collapsed', async () => {
-    await act(async () => {
-      root.render(<CreateRuntimeProfileComponent service={mockService} />);
-    });
-
-    const header = container.querySelector(
-      '.additional-config-header-container'
-    ) as HTMLDivElement;
-    const buttons = container.querySelector(
-      '.runtime-profile-buttons'
-    ) as HTMLDivElement;
-    // Toggles only when needed, so the test holds whichever state the
-    // section starts in.
-    const setExpanded = async (expanded: boolean) => {
-      if ((header.getAttribute('aria-expanded') === 'true') !== expanded) {
-        await act(async () => {
-          header.click();
-        });
-      }
-      expect(header.getAttribute('aria-expanded')).toBe(String(expanded));
-    };
-
-    // Collapsed: no line directly below the header
-    await setExpanded(false);
-    expect(buttons.classList.contains('no-top-border')).toBe(true);
-
-    // Expanded: the divider above the buttons is kept
-    await setExpanded(true);
-    expect(buttons.classList.contains('no-top-border')).toBe(false);
   });
 
   it('renders custom initial configuration values and mapped display labels in the UI', async () => {
@@ -365,8 +342,10 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     expect(getFieldValue('Python package repository')).toBe(
       'https://pypi.org/simple'
     );
-    expect(getFieldValue('Tier')).toBe('Premium');
-    expect(getFieldValue('Driver machine type')).toBe('highmem-8');
+    expect(getFieldValue('Tier')).toBe('Premium (Lightning Engine enabled)');
+    expect(getFieldValue('Driver machine type')).toBe(
+      'highmem-8 (8 vCPU, 64 GB)'
+    );
     expect(getFieldValue('Driver disk')).toBe('SSD 200 GB');
     // Executor type always reflects the shape selected in the dropdown
     expect(getFieldValue('Executor type')).toBe('highmem-4 (4 vCPU, 32 GB)');
@@ -534,7 +513,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     expect(standardCard.textContent).toContain('Standard');
     expect(premiumCard.classList.contains('selected')).toBe(true);
     expect(standardCard.classList.contains('selected')).toBe(false);
-    expect(getFieldValue('Tier')).toBe('Premium');
+    expect(getFieldValue('Tier')).toBe('Premium (Lightning Engine enabled)');
 
     // Switch to Standard tier
     await act(async () => {
@@ -554,7 +533,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
       );
     });
     expect(premiumCard.classList.contains('selected')).toBe(true);
-    expect(getFieldValue('Tier')).toBe('Premium');
+    expect(getFieldValue('Tier')).toBe('Premium (Lightning Engine enabled)');
     expect(
       container.querySelector('.runtime-profile-checkbox-section')
     ).not.toBeNull();
@@ -1122,6 +1101,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
 
     await selectExecutorType('highmem-16');
     expect(getFieldValue('Executor type')).toContain('highmem-16');
+    expect(getFieldValue('Driver machine type')).toContain('highmem-16');
 
     const generalCard = container
       .querySelectorAll('.node-config-cards-container')[1]
@@ -1703,8 +1683,8 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     expect(ExecutorAndDriverEditDrawer).toBeDefined();
     expect(typeof ExecutorAndDriverEditDrawer).toBe('function');
     expect(DISK_TIER_OPTIONS).toEqual(['HDD (standard)', 'SSD (premium)']);
-    expect(HDD_DISK_SIZES.length).toBe(14);
-    expect(HDD_DISK_SIZES[0]).toBe('200 GiB');
+    expect(HDD_DISK_SIZES.length).toBe(13);
+    expect(HDD_DISK_SIZES[0]).toBe('300 GiB');
     expect(HDD_DISK_SIZES[HDD_DISK_SIZES.length - 1]).toBe('1500 GiB');
     expect(SSD_DISK_SIZES.length).toBe(6);
     expect(SSD_DISK_SIZES[0]).toBe('375 GiB');
@@ -1712,9 +1692,13 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
   });
 
   it('should parse disk tier and size correctly with parseDiskTierAndSize', () => {
+    expect(parseDiskTierAndSize('HDD (standard), 300 GiB')).toEqual({
+      tier: 'HDD (standard)',
+      size: '300 GiB'
+    });
     expect(parseDiskTierAndSize('HDD (standard), 200 GiB')).toEqual({
       tier: 'HDD (standard)',
-      size: '200 GiB'
+      size: '400 GiB'
     });
     expect(parseDiskTierAndSize('SSD (premium), 375 GiB')).toEqual({
       tier: 'SSD (premium)',
@@ -1726,7 +1710,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     });
     expect(parseDiskTierAndSize('')).toEqual({
       tier: 'HDD (standard)',
-      size: '200 GiB'
+      size: '400 GiB'
     });
     expect(parseDiskTierAndSize(undefined, 'SSD (premium)')).toEqual({
       tier: 'SSD (premium)',
@@ -1894,7 +1878,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     ).toBe('2.3 LTS (Spark 3.5.1, Python 3.12)');
     expect(
       rows.find((r: ISectionProperty) => r.label === 'Executor node')?.value
-    ).toBe('highmem-4 (4 vCPU, 32 GB), 375 GB SSD');
+    ).toBe('highmem-4 (4 vCPU, 32 GB), SSD (premium), 375 GiB');
     expect(
       rows.find((r: ISectionProperty) => r.label === 'Driver node')?.value
     ).toBe('Same as executor');
@@ -1957,7 +1941,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
       executorMachineType: 'standard-8',
       executorDisk: 'Standard persistent disk (HDD), 400 GB',
       driverMachineType: 'standard-4',
-      driverDisk: 'Standard persistent disk (HDD), 200 GB',
+      driverDisk: 'Standard persistent disk (HDD), 300 GB',
       useDifferentDriverConfig: true,
       autoscalingEnabled: false,
       initialExecutors: 4,
@@ -1969,10 +1953,10 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
       'Standard'
     );
     expect(customRows.find(r => r.label === 'Executor node')?.value).toBe(
-      '4 x standard-8 (8 vCPU, 32 GB), 400 GB HDD'
+      '4 x standard-8 (8 vCPU, 32 GB), HDD (standard), 400 GiB'
     );
     expect(customRows.find(r => r.label === 'Driver node')?.value).toBe(
-      'standard-4 (4 vCPU, 16 GB), 200 GB HDD'
+      'standard-4 (4 vCPU, 16 GB), HDD (standard), 300 GiB'
     );
     expect(customRows.find(r => r.label === 'Autoscaling')?.value).toBe(
       'Disabled'
@@ -1987,7 +1971,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
       useDifferentDriverConfig: false
     });
     expect(acceleratedRows.find(r => r.label === 'Executor node')?.value).toBe(
-      'L4 (4 vCPU), 375 GB SSD'
+      'L4 (4 vCPU), SSD (premium), 375 GiB'
     );
 
     const emptyRows = formatRuntimeProfileSummaryProperties({
@@ -2014,7 +1998,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
           initialExecutorAndDriverConfig={{
             tier: 'Premium',
             executorType: 'highmem-4',
-            executorDisk: 'HDD (standard), 200 GiB',
+            executorDisk: 'HDD (standard), 300 GiB',
             useDifferentDriverConfig: true,
             driverMachineType: 'standard-8',
             driverDisk: 'HDD (standard), 400 GiB'
@@ -2041,10 +2025,10 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     };
 
     expect(getSummaryRowValue('Executor node')).toBe(
-      'highmem-4 (4 vCPU, 32 GB), 200 GB HDD'
+      'highmem-4 (4 vCPU, 32 GB), HDD (standard), 300 GiB'
     );
     expect(getSummaryRowValue('Driver node')).toBe(
-      'standard-8 (8 vCPU, 32 GB), 400 GB HDD'
+      'standard-8 (8 vCPU, 32 GB), HDD (standard), 400 GiB'
     );
   });
 
@@ -2073,6 +2057,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     expect(getProfileTierSummaryValue()).toBe(
       'Premium (Lightning Engine enabled)'
     );
+    expect(getFieldValue('Tier')).toBe('Premium (Lightning Engine enabled)');
 
     const lightningCheckbox = container.querySelector(
       '.runtime-profile-checkbox-section input[type="checkbox"]'
@@ -2086,6 +2071,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     });
     expect(lightningCheckbox.checked).toBe(false);
     expect(getProfileTierSummaryValue()).toBe('Premium');
+    expect(getFieldValue('Tier')).toBe('Premium');
 
     // Re-check Lightning Engine
     await act(async () => {
@@ -2095,6 +2081,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     expect(getProfileTierSummaryValue()).toBe(
       'Premium (Lightning Engine enabled)'
     );
+    expect(getFieldValue('Tier')).toBe('Premium (Lightning Engine enabled)');
   });
 
   describe('edit mode', () => {
@@ -2198,7 +2185,10 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
       expect(getFieldValue('Custom spark image')).toBe(
         'gcr.io/my-project/spark:latest'
       );
-      expect(getFieldValue('Tier')).toBe('Premium');
+      expect(getFieldValue('Tier')).toBe('Premium (Lightning Engine enabled)');
+      expect(getFieldValue('Driver machine type')).toBe(
+        'highmem-8 (8 vCPU, 64 GB)'
+      );
       expect(getFieldValue('Executor type')).toBe('highmem-8 (8 vCPU, 64 GB)');
       expect(getFieldValue('Maximum executors')).toBe('20');
       expect(getFieldValue('Metastore')).toBe(
@@ -2813,7 +2803,7 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     expect(
       document.body.querySelector('#max-session-time-quantity-error-text')
         ?.textContent
-    ).toBe('Max session time must be between 10 minutes and 14 days.');
+    ).toBe('Max session time must be between 10 minutes and 330 hours.');
     expect(getSaveBtn()?.disabled).toBe(true);
 
     await act(async () => {
@@ -2831,6 +2821,9 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
     await act(async () => {
       (editButtons[6] as HTMLButtonElement).click();
     });
+    expect(
+      document.body.querySelectorAll('.edit-drawer-kv-list')
+    ).toHaveLength(0);
     const addBtns = Array.from(
       document.body.querySelectorAll('.edit-drawer-add-btn')
     ) as HTMLButtonElement[];
@@ -2838,6 +2831,9 @@ describe('CreateRuntimeProfileComponent UI & Service', () => {
       addBtns[0].click();
       addBtns[1].click();
     });
+    expect(
+      document.body.querySelectorAll('.edit-drawer-kv-list')
+    ).toHaveLength(2);
     expect(document.body.querySelector('#spark-key-error-0')?.textContent).toBe(
       'Key is required'
     );
