@@ -21,9 +21,11 @@ test.describe('Create and run notebook', () => {
   test('Can create, attach and run print() command', async ({ page }) => {
     // This is a slow integration test because it waits for a session to spin up.
     test.setTimeout(5 * 60 * 1000);
+ //   await page.getByRole('region', { name: 'notebook content' }).click();
+
     await page
       .locator('.jp-LauncherCard:visible', {
-        hasText: 'Jupyter Plugin Kokoro Template on Serverless Spark (Remote)'
+        hasText: 'test12thMarchBuild on Serverless Spark (Remote)'
       })
       .click();
 
@@ -33,16 +35,15 @@ test.describe('Create and run notebook', () => {
       .locator('div')
       .first();
 
-    // Wait for kernel to be ready
-    const kernelStartingIndicator = page.locator(
-      '.jp-Notebook-ExecutionIndicator[data-status="starting"]'
-    );
+          const startTime2 = Date.now();
+    const kernelStartingIndicator = page.locator('.jp-Notebook-ExecutionIndicator[data-status="starting"]');
     await kernelStartingIndicator.waitFor({ state: 'visible', timeout: 30000 });
-    await kernelStartingIndicator.waitFor({
-      state: 'hidden',
-      // Reduced timeout to leave time for other test steps
-      timeout: 4 * 60 * 1000
-    });
+    await kernelStartingIndicator.waitFor({ state: 'hidden', timeout: 5 * 60 * 1000 });
+
+      const endTime2 = Date.now(); // Capture end time
+     const executionTime2 = (endTime2 - startTime2) / 1000; // Convert to seconds
+
+     console.log(`Execution Time1 = ${executionTime2} seconds`);
 
     await firstCodeBox.click();
     await firstCodeBox.fill("print('test output')");
