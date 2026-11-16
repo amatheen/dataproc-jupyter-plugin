@@ -15,8 +15,19 @@
  * limitations under the License.
  */
 
+import * as path from 'path';
 import { Panel } from '@lumino/widgets';
 import { NotebookPanel } from '@jupyterlab/notebook';
+
+const mockGcpServiceUrls = {
+  dataproc_url: 'https://dataproc.googleapis.com/',
+  compute_url: 'https://compute.googleapis.com/compute',
+  metastore_url: 'https://metastore.googleapis.com/',
+  cloudkms_url: 'https://cloudkms.googleapis.com/',
+  cloudresourcemanager_url: 'https://cloudresourcemanager.googleapis.com/',
+  datacatalog_url: 'https://datacatalog.googleapis.com/',
+  storage_url: 'https://storage.googleapis.com/'
+};
 
 jest.mock('@jupyter/web-components', () => ({
   provideJupyterDesignSystem: jest.fn().mockReturnValue({
@@ -61,12 +72,10 @@ jest.mock('../login/authLogin', () => {
 
 jest.mock('../dpms/dpmsWidget', () => {
   const { Widget } = require('@lumino/widgets');
-  const dpmsWidget = jest.fn().mockImplementation(() => {
-    const widget = new Widget();
-    Object.setPrototypeOf(widget, dpmsWidget.prototype);
-    return widget;
-  });
-  Object.setPrototypeOf(dpmsWidget.prototype, Widget.prototype);
+  class MockDpmsWidget extends Widget {}
+  const dpmsWidget = jest.fn(() => new MockDpmsWidget());
+  // Preserve prototype chain so `widget instanceof dpmsWidget` succeeds in loadDpmsWidget
+  dpmsWidget.prototype = MockDpmsWidget.prototype;
   return { dpmsWidget };
 });
 
@@ -91,51 +100,41 @@ jest.mock('../runtimeProfile/createRuntimeProfile', () => {
   };
 });
 
-jest.mock('../controls/NotebookButtonExtension', () => {
-  return {
-    NotebookButtonExtension: class MockNotebookButtonExtension {}
-  };
-});
+jest.mock('../controls/NotebookButtonExtension', () => ({
+  NotebookButtonExtension: class MockNotebookButtonExtension {}
+}));
+
+jest.mock('../notifications', () => ({
+  setupNotificationSystem: jest.fn()
+}));
 
 jest.mock('../bigQuery/bigQueryService', () => ({
   BigQueryService: {
-    checkBigQueryDatasetsAPIService: jest
-      .fn()
-      .mockResolvedValue({ is_enabled: true })
+    checkBigQueryDatasetsAPIService: jest.fn()
   }
 }));
 
 jest.mock('../runtime/runtimeService', () => ({
   RuntimeService: {
-    checkDataprocApiEnabledService: jest
-      .fn()
-      .mockResolvedValue({ is_enabled: true })
+    checkDataprocApiEnabledService: jest.fn()
   }
 }));
 
 jest.mock('../notebookTemplates/notebookTemplatesService', () => ({
-  handleClickService: jest.fn()
+  __esModule: true,
+  default: {
+    handleClickService: jest.fn()
+  }
 }));
 
 jest.mock('../handler/handler', () => ({
-  requestAPI: jest.fn().mockResolvedValue({
-    dataproc_url: 'https://dataproc.googleapis.com',
-    compute_url: 'https://compute.googleapis.com',
-    metastore_url: 'https://metastore.googleapis.com',
-    cloudkms_url: 'https://cloudkms.googleapis.com',
-    cloudresourcemanager_url: 'https://cloudresourcemanager.googleapis.com',
-    datacatalog_url: 'https://datacatalog.googleapis.com',
-    storage_url: 'https://storage.googleapis.com'
-  })
+  requestAPI: jest.fn(() => Promise.resolve(mockGcpServiceUrls))
 }));
 
 jest.mock('../utils/utils', () => ({
-  authApi: jest.fn().mockResolvedValue({
-    project_id: 'test-project',
-    login_error: false,
-    config_error: false
-  }),
-  iconDisplay: jest.fn().mockReturnValue({})
+  ...jest.requireActual('../utils/utils'),
+  authApi: jest.fn(),
+  iconDisplay: jest.fn()
 }));
 
 jest.mock('../utils/loggingService', () => ({
@@ -150,35 +149,20 @@ jest.mock('../utils/loggingService', () => ({
   }
 }));
 
-jest.mock('@jupyterlab/services', () => ({
-  KernelAPI: {
-    listRunning: jest.fn().mockResolvedValue([])
-  },
-  KernelSpecAPI: {
-    getSpecs: jest.fn().mockResolvedValue({
-      kernelspecs: {
-        'session-kernel': {
-          name: 'session-kernel',
-          display_name: 'Session Kernel',
-          argv: ['python'],
-          resources: {
-            endpointParentResource: 'projects/p/locations/l/sessions/s1'
-          },
-          metadata: {}
-        },
-        'cluster-kernel': {
-          name: 'cluster-kernel',
-          display_name: 'Cluster Kernel',
-          argv: ['python'],
-          resources: {
-            endpointParentResource: 'projects/p/regions/r/clusters/c1'
-          },
-          metadata: {}
-        }
-      }
-    })
-  }
-}));
+jest.mock('@jupyterlab/services', () => {
+  const actual = jest.requireActual('@jupyterlab/services');
+  return {
+    ...actual,
+    KernelAPI: {
+      ...actual.KernelAPI,
+      listRunning: jest.fn()
+    },
+    KernelSpecAPI: {
+      ...actual.KernelSpecAPI,
+      getSpecs: jest.fn()
+    }
+  };
+});
 
 jest.mock('@jupyterlab/apputils', () => {
   const actual = jest.requireActual('@jupyterlab/apputils');
@@ -212,9 +196,36 @@ import NotebookTemplateService from '../notebookTemplates/notebookTemplatesServi
 import { BigQueryService } from '../bigQuery/bigQueryService';
 import { RuntimeService } from '../runtime/runtimeService';
 import { authApi, iconDisplay } from '../utils/utils';
-import { KernelSpecAPI } from '@jupyterlab/services';
+import { KernelAPI, KernelSpecAPI } from '@jupyterlab/services';
+import { setupNotificationSystem } from '../notifications';
+
+const DEFAULT_KERNEL_SPECS = {
+  kernelspecs: {
+    'session-kernel': {
+      name: 'session-kernel',
+      display_name: 'Session Kernel',
+      argv: ['python'],
+      resources: {
+        endpointParentResource: 'projects/p/locations/l/sessions/s1'
+      },
+      metadata: {}
+    },
+    'cluster-kernel': {
+      name: 'cluster-kernel',
+      display_name: 'Cluster Kernel',
+      argv: ['python'],
+      resources: {
+        endpointParentResource: 'projects/p/regions/r/clusters/c1'
+      },
+      metadata: {}
+    }
+  }
+};
 
 describe('extension index.ts comprehensive test suite', () => {
+  const initialDocumentTitle = document.title;
+  const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0));
+
   let appMock: any;
   let factoryMock: any;
   let defaultFileBrowserMock: any;
@@ -226,55 +237,119 @@ describe('extension index.ts comprehensive test suite', () => {
   let settingRegistryMock: any;
   let documentManagerMock: any;
   let commandsMap: Map<string, any>;
-  let launcherItems: any[];
   let currentChangedCallback:
     | ((sender: any, args: any) => Promise<void>)
     | null = null;
   let themeChangedCallback: (() => void) | null = null;
+  let resolveRestored: () => void;
+  let rejectRestored: (reason?: any) => void;
+  let registeredEmitterListeners: Array<{
+    event: string;
+    listener: Parameters<typeof eventEmitter.on>[1];
+  }>;
+
+  const activateExtension = (overrides: { launcher?: any } = {}) =>
+    (extension.activate as any)(
+      appMock,
+      factoryMock,
+      defaultFileBrowserMock,
+      'launcher' in overrides ? overrides.launcher : launcherMock,
+      mainMenuMock,
+      labShellMock,
+      notebookTrackerMock,
+      themeManagerMock,
+      settingRegistryMock,
+      documentManagerMock
+    );
+
+  const createMockNotebookPanel = (
+    label: string,
+    kernelName: string | null,
+    titleChangedConnect = jest.fn(),
+    titleChangedDisconnect = jest.fn()
+  ) => {
+    const panel = Object.create(NotebookPanel.prototype, {
+      title: {
+        value: {
+          label,
+          owner: null,
+          changed: {
+            connect: titleChangedConnect,
+            disconnect: titleChangedDisconnect
+          }
+        }
+      },
+      toolbar: {
+        value: {
+          update: jest.fn()
+        }
+      },
+      sessionContext: {
+        writable: true,
+        value: {
+          session: kernelName ? { kernel: { name: kernelName } } : null
+        }
+      }
+    });
+    panel.title.owner = panel;
+    return panel;
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
     localStorage.clear();
-    (eventEmitter as any).events = {};
+    document.title = initialDocumentTitle;
     commandsMap = new Map();
-    launcherItems = [];
     currentChangedCallback = null;
     themeChangedCallback = null;
+    registeredEmitterListeners = [];
 
-    (requestAPI as jest.Mock).mockImplementation(
-      (endpoint: string, init?: any) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({
-            enable_bigquery_integration: true,
-            enable_metastore_integration: true,
-            enable_cloud_storage_integration: true,
-            enable_runtime_profile_integration: true
-          });
-        }
-        if (endpoint === 'getGcpServiceUrls') {
-          return Promise.resolve({
-            dataproc_url: 'https://dataproc.googleapis.com',
-            compute_url: 'https://compute.googleapis.com',
-            metastore_url: 'https://metastore.googleapis.com',
-            cloudkms_url: 'https://cloudkms.googleapis.com',
-            cloudresourcemanager_url:
-              'https://cloudresourcemanager.googleapis.com',
-            datacatalog_url: 'https://datacatalog.googleapis.com',
-            storage_url: 'https://storage.googleapis.com'
-          });
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.resolve({ status: 'OK' });
-        }
-        if (endpoint.startsWith('jupyterlabVersion')) {
-          return Promise.resolve('0.1.0');
-        }
-        if (endpoint.startsWith('updatePlugin')) {
-          return Promise.resolve({});
-        }
+    const originalOn = eventEmitter.on.bind(eventEmitter);
+    jest.spyOn(eventEmitter, 'on').mockImplementation((event, listener) => {
+      registeredEmitterListeners.push({ event, listener });
+      originalOn(event, listener);
+    });
+
+    (authApi as jest.Mock).mockResolvedValue({
+      project_id: 'test-project',
+      login_error: false,
+      config_error: false
+    });
+    (iconDisplay as jest.Mock).mockReturnValue({});
+    (
+      RuntimeService.checkDataprocApiEnabledService as jest.Mock
+    ).mockResolvedValue({ is_enabled: true });
+    (
+      BigQueryService.checkBigQueryDatasetsAPIService as jest.Mock
+    ).mockResolvedValue({ is_enabled: true });
+    (KernelAPI.listRunning as jest.Mock).mockResolvedValue([]);
+    (KernelSpecAPI.getSpecs as jest.Mock).mockResolvedValue(
+      DEFAULT_KERNEL_SPECS
+    );
+
+    (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+      if (endpoint === 'settings') {
+        return Promise.resolve({
+          enable_bigquery_integration: true,
+          enable_metastore_integration: true,
+          enable_cloud_storage_integration: true,
+          enable_runtime_profile_integration: true
+        });
+      }
+      if (endpoint === 'getGcpServiceUrls') {
+        return Promise.resolve(mockGcpServiceUrls);
+      }
+      if (endpoint.startsWith('checkResourceManager')) {
+        return Promise.resolve({ status: 'OK' });
+      }
+      if (endpoint.startsWith('jupyterlabVersion')) {
+        return Promise.resolve('0.1.0');
+      }
+      if (endpoint.startsWith('updatePlugin')) {
         return Promise.resolve({});
       }
-    );
+      return Promise.resolve({});
+    });
 
     appMock = {
       commands: {
@@ -284,7 +359,10 @@ describe('extension index.ts comprehensive test suite', () => {
         }),
         execute: jest.fn().mockResolvedValue({ path: 'test-doc-path' })
       },
-      restored: Promise.resolve(),
+      restored: new Promise<void>((resolve, reject) => {
+        resolveRestored = resolve;
+        rejectRestored = reject;
+      }),
       shell: {
         add: jest.fn(),
         currentWidget: {
@@ -314,9 +392,7 @@ describe('extension index.ts comprehensive test suite', () => {
     defaultFileBrowserMock = {};
 
     launcherMock = {
-      add: jest.fn((item: any) => {
-        launcherItems.push(item);
-      })
+      add: jest.fn()
     };
 
     mainMenuMock = {};
@@ -350,6 +426,14 @@ describe('extension index.ts comprehensive test suite', () => {
     documentManagerMock = {};
   });
 
+  afterEach(() => {
+    registeredEmitterListeners.splice(0).forEach(({ event, listener }) => {
+      eventEmitter.off(event, listener);
+    });
+    document.title = initialDocumentTitle;
+    jest.restoreAllMocks();
+  });
+
   describe('1. Plugin metadata and initial activation sequence', () => {
     it('should have correct plugin properties', () => {
       expect(extension.id).toBe(PLUGIN_ID);
@@ -357,62 +441,85 @@ describe('extension index.ts comprehensive test suite', () => {
       expect(Array.isArray(extension.optional)).toBe(true);
     });
 
-    it('should attach DataprocLoggingService and register notebook widget extension', async () => {
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
+    it('should attach DataprocLoggingService, setup notifications, and register notebook widget extension', async () => {
+      await activateExtension();
 
       expect(DataprocLoggingService.attach).toHaveBeenCalled();
       expect(appMock.docRegistry.addWidgetExtension).toHaveBeenCalledWith(
         'Notebook',
         expect.any(NotebookButtonExtension)
       );
+      expect(setupNotificationSystem).toHaveBeenCalledWith(appMock);
     });
 
     it('should handle window beforeunload event by removing notebookValue from localStorage', async () => {
       localStorage.setItem('notebookValue', 'test-cluster');
 
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
+      await activateExtension();
 
       window.dispatchEvent(new Event('beforeunload'));
       expect(localStorage.getItem('notebookValue')).toBeNull();
+    });
+
+    it('should run executeApiChecks after app.restored resolves when document is complete', async () => {
+      await activateExtension();
+
+      resolveRestored();
+      await flushPromises();
+
+      expect(RuntimeService.checkDataprocApiEnabledService).toHaveBeenCalled();
+      expect(
+        BigQueryService.checkBigQueryDatasetsAPIService
+      ).toHaveBeenCalled();
+      expect(requestAPI).toHaveBeenCalledWith(
+        'jupyterlabVersion?packageName=dataproc_jupyter_plugin',
+        { method: 'GET' }
+      );
+    });
+
+    it('should defer executeApiChecks until window load event when document.readyState is loading', async () => {
+      jest.spyOn(document, 'readyState', 'get').mockReturnValue('loading');
+
+      await activateExtension();
+
+      resolveRestored();
+      await flushPromises();
+
+      expect(requestAPI).not.toHaveBeenCalledWith(
+        'jupyterlabVersion?packageName=dataproc_jupyter_plugin',
+        { method: 'GET' }
+      );
+
+      window.dispatchEvent(new Event('load'));
+      await flushPromises();
+
+      expect(requestAPI).toHaveBeenCalledWith(
+        'jupyterlabVersion?packageName=dataproc_jupyter_plugin',
+        { method: 'GET' }
+      );
+    });
+
+    it('should log error when app.restored rejects', async () => {
+      const errorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+
+      await activateExtension();
+
+      const restoreError = new Error('restoration failed');
+      rejectRestored(restoreError);
+      await flushPromises();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Error during app restoration:',
+        restoreError
+      );
     });
   });
 
   describe('2. Side panels initialization and theme switching', () => {
     it('should initialize BigQuery and DPMS side panels when enabled in settings', async () => {
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
+      await activateExtension();
 
       expect(BigQueryWidget).toHaveBeenCalled();
       expect(dpmsWidget).toHaveBeenCalled();
@@ -429,53 +536,171 @@ describe('extension index.ts comprehensive test suite', () => {
       );
     });
 
-    it('should update side panel icons on theme change', async () => {
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
+    it('should coerce string feature flags ("true" and "1") to enable side panels', async () => {
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({
+            enable_bigquery_integration: 'true',
+            enable_metastore_integration: '1'
+          });
+        }
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.resolve({ status: 'OK' });
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+
+      expect(BigQueryWidget).toHaveBeenCalled();
+      expect(dpmsWidget).toHaveBeenCalledTimes(1);
+    });
+
+    it('should not initialize side panels for falsy string ("false") or undefined flags and should early-return on theme change', async () => {
+      localStorage.setItem('notebookValue', 'existing-c1/clusters');
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({
+            enable_bigquery_integration: 'false',
+            enable_metastore_integration: undefined
+          });
+        }
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.resolve({ status: 'OK' });
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+
+      expect(BigQueryWidget).not.toHaveBeenCalled();
+      expect(dpmsWidget).not.toHaveBeenCalled();
+      expect(appMock.shell.add).not.toHaveBeenCalledWith(
+        expect.any(Panel),
+        'left',
+        expect.anything()
       );
+
+      themeManagerMock.isLight.mockClear();
+      themeChangedCallback!();
+      expect(themeManagerMock.isLight).not.toHaveBeenCalled();
+    });
+
+    it('should reload DPMS widget and dispose previous dpmsWidget when notebookValue is preset in localStorage', async () => {
+      localStorage.setItem('notebookValue', 'existing-c1/clusters');
+
+      await activateExtension();
+
+      const dpmsMock = dpmsWidget as unknown as jest.Mock;
+      expect(dpmsMock).toHaveBeenCalledTimes(2);
+      const firstInstance = dpmsMock.mock.results[0].value;
+      const secondInstance = dpmsMock.mock.results[1].value;
+      expect(firstInstance.isDisposed).toBe(true);
+      expect(secondInstance.isDisposed).toBe(false);
+    });
+
+    it('should update side panel icons on theme change and default to light icons when theme is null', async () => {
+      await activateExtension();
+
+      const leftShellCalls = (appMock.shell.add as jest.Mock).mock.calls.filter(
+        call => call[1] === 'left'
+      );
+      const bqPanel: Panel = leftShellCalls[0][0];
+      const dpmsPanel: Panel = leftShellCalls[1][0];
 
       expect(themeChangedCallback).toBeDefined();
 
-      // Trigger dark theme
+      // Dark theme icons
       themeManagerMock.isLight.mockReturnValue(false);
       themeChangedCallback!();
-
-      // Trigger light theme
-      themeManagerMock.isLight.mockReturnValue(true);
-      themeChangedCallback!();
-    });
-  });
-
-  describe('3. Event emitter signal handlers', () => {
-    it('should respond to dataprocConfigChange signal', async () => {
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
+      expect((bqPanel.title.icon as any).name).toBe(
+        'launcher:dataset-explorer-icon-dark'
+      );
+      expect((dpmsPanel.title.icon as any).name).toBe(
+        'launcher:dpms-icon-dark'
       );
 
-      eventEmitter.emit('dataprocConfigChange', 'config updated');
+      // Light theme icons
+      themeManagerMock.isLight.mockReturnValue(true);
+      themeChangedCallback!();
+      expect((bqPanel.title.icon as any).name).toBe(
+        'launcher:dataset-explorer-icon'
+      );
+      expect((dpmsPanel.title.icon as any).name).toBe('launcher:dpms-icon');
+
+      // Null theme falls back to light icons without calling isLight
+      themeManagerMock.isLight.mockReturnValue(false);
+      themeChangedCallback!();
+      expect((dpmsPanel.title.icon as any).name).toBe(
+        'launcher:dpms-icon-dark'
+      );
+
+      themeManagerMock.theme = null;
+      themeManagerMock.isLight.mockClear();
+      themeChangedCallback!();
+      expect(themeManagerMock.isLight).not.toHaveBeenCalled();
+      expect((bqPanel.title.icon as any).name).toBe(
+        'launcher:dataset-explorer-icon'
+      );
+      expect((dpmsPanel.title.icon as any).name).toBe('launcher:dpms-icon');
     });
   });
 
-  describe('4. Resource Manager and JupyterLab version checks', () => {
-    it('should notify error if resource manager API returns error', async () => {
+  describe('3. Event emitter signal handlers and API enablement checks', () => {
+    it('should respond to dataprocConfigChange signal by re-checking APIs and reloading panels', async () => {
+      await activateExtension();
+      (BigQueryWidget as unknown as jest.Mock).mockClear();
+      (dpmsWidget as unknown as jest.Mock).mockClear();
+
+      eventEmitter.emit('dataprocConfigChange', 'config updated');
+      await flushPromises();
+
+      expect(RuntimeService.checkDataprocApiEnabledService).toHaveBeenCalled();
+      expect(
+        BigQueryService.checkBigQueryDatasetsAPIService
+      ).toHaveBeenCalled();
+      expect(BigQueryWidget).toHaveBeenCalled();
+      expect(dpmsWidget).toHaveBeenCalled();
+    });
+
+    it('should notify error and open enable links when Dataproc and BigQuery APIs are disabled', async () => {
+      const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
+      await activateExtension();
+
+      (
+        RuntimeService.checkDataprocApiEnabledService as jest.Mock
+      ).mockResolvedValueOnce({ is_enabled: false });
+      (
+        BigQueryService.checkBigQueryDatasetsAPIService as jest.Mock
+      ).mockResolvedValueOnce({ is_enabled: false });
+
+      resolveRestored();
+      await flushPromises();
+
+      expect(Notification.error).toHaveBeenCalledWith(
+        'The Cloud Dataproc API is not enabled.',
+        expect.any(Object)
+      );
+      expect(Notification.error).toHaveBeenCalledWith(
+        'The BigQuery API is not enabled.',
+        expect.any(Object)
+      );
+
+      for (const [, options] of (Notification.error as jest.Mock).mock.calls) {
+        options?.actions?.[0]?.callback();
+      }
+
+      expect(openSpy).toHaveBeenCalledWith(
+        'https://console.cloud.google.com/apis/library/dataproc.googleapis.com?project=test-project',
+        '_blank'
+      );
+      expect(openSpy).toHaveBeenCalledWith(
+        'https://console.cloud.google.com/apis/library/bigquery.googleapis.com?project=test-project',
+        '_blank'
+      );
+    });
+
+    it('should skip BigQuery API check when enable_bigquery_integration is false', async () => {
       (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
         if (endpoint === 'settings') {
           return Promise.resolve({
@@ -483,16 +708,68 @@ describe('extension index.ts comprehensive test suite', () => {
             enable_metastore_integration: false
           });
         }
-        if (endpoint === 'getGcpServiceUrls') {
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.resolve({ status: 'OK' });
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+
+      eventEmitter.emit('dataprocConfigChange', 'config updated');
+      await flushPromises();
+
+      expect(RuntimeService.checkDataprocApiEnabledService).toHaveBeenCalled();
+      expect(
+        BigQueryService.checkBigQueryDatasetsAPIService
+      ).not.toHaveBeenCalled();
+    });
+
+    it('should skip Dataproc and BigQuery API checks when authApi returns login_error', async () => {
+      await activateExtension();
+
+      (authApi as jest.Mock).mockResolvedValueOnce({
+        login_error: true,
+        config_error: false
+      });
+
+      eventEmitter.emit('dataprocConfigChange', 'config updated');
+      await flushPromises();
+
+      expect(
+        RuntimeService.checkDataprocApiEnabledService
+      ).not.toHaveBeenCalled();
+      expect(
+        BigQueryService.checkBigQueryDatasetsAPIService
+      ).not.toHaveBeenCalled();
+    });
+
+    it('should still run API checks when authApi resolves to undefined', async () => {
+      await activateExtension();
+
+      (authApi as jest.Mock).mockResolvedValueOnce(undefined);
+      (
+        RuntimeService.checkDataprocApiEnabledService as jest.Mock
+      ).mockResolvedValueOnce({ is_enabled: false });
+
+      resolveRestored();
+      await flushPromises();
+
+      expect(Notification.error).toHaveBeenCalledWith(
+        'The Cloud Dataproc API is not enabled.',
+        expect.any(Object)
+      );
+    });
+  });
+
+  describe('4. Resource Manager and JupyterLab version checks', () => {
+    it('should notify error and open enable link when Cloud Resource Manager API is not enabled', async () => {
+      const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
           return Promise.resolve({
-            dataproc_url: 'https://dataproc.googleapis.com',
-            compute_url: 'https://compute.googleapis.com',
-            metastore_url: 'https://metastore.googleapis.com',
-            cloudkms_url: 'https://cloudkms.googleapis.com',
-            cloudresourcemanager_url:
-              'https://cloudresourcemanager.googleapis.com',
-            datacatalog_url: 'https://datacatalog.googleapis.com',
-            storage_url: 'https://storage.googleapis.com'
+            enable_bigquery_integration: false,
+            enable_metastore_integration: false
           });
         }
         if (endpoint.startsWith('checkResourceManager')) {
@@ -502,55 +779,229 @@ describe('extension index.ts comprehensive test suite', () => {
               'API [cloudresourcemanager.googleapis.com] not enabled on project'
           });
         }
-        if (endpoint.startsWith('jupyterlabVersion')) {
-          return Promise.resolve('0.1.0');
-        }
-        return Promise.resolve({
-          dataproc_url: 'https://dataproc.googleapis.com',
-          compute_url: 'https://compute.googleapis.com',
-          metastore_url: 'https://metastore.googleapis.com',
-          cloudkms_url: 'https://cloudkms.googleapis.com',
-          cloudresourcemanager_url:
-            'https://cloudresourcemanager.googleapis.com',
-          datacatalog_url: 'https://datacatalog.googleapis.com',
-          storage_url: 'https://storage.googleapis.com'
-        });
+        return Promise.resolve({});
       });
 
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
+      await activateExtension();
 
       expect(Notification.error).toHaveBeenCalledWith(
         expect.stringContaining('Cloud Resource Manager API is not enabled'),
         expect.any(Object)
+      );
+
+      const actions = (Notification.error as jest.Mock).mock.calls[0][1]
+        .actions;
+      actions[0].callback();
+      expect(openSpy).toHaveBeenCalledWith(
+        'https://console.cloud.google.com/apis/library/cloudresourcemanager.googleapis.com?project=test-project',
+        '_blank'
+      );
+    });
+
+    it('should notify generic error message for other Resource Manager API errors', async () => {
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({});
+        }
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.resolve({
+            status: 'ERROR',
+            error: 'Permission denied on resource'
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+
+      expect(Notification.error).toHaveBeenCalledWith(
+        'Error calling into the Resource Manager API: Permission denied on resource',
+        { autoClose: false }
+      );
+    });
+
+    it('should notify generic error when Resource Manager returns status ERROR without error details and credentials are undefined', async () => {
+      (authApi as jest.Mock).mockResolvedValueOnce(undefined);
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({});
+        }
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.resolve({ status: 'ERROR' });
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+
+      expect(Notification.error).toHaveBeenCalledWith(
+        'Error calling into the Resource Manager API: undefined',
+        { autoClose: false }
+      );
+    });
+
+    it('should log error and not throw when checkResourceManager request rejects', async () => {
+      const errorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const networkError = new Error('network failure');
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({});
+        }
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.reject(networkError);
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Resource manager Api not enabled:',
+        networkError
+      );
+    });
+
+    it('should prompt for update when a newer JupyterLab plugin version is available and handle Ignore action', async () => {
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({});
+        }
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.resolve({ status: 'OK' });
+        }
+        if (endpoint.startsWith('jupyterlabVersion')) {
+          return Promise.resolve('99.0.0');
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+      resolveRestored();
+      await flushPromises();
+
+      expect(Notification.info).toHaveBeenCalledWith(
+        'There is a new version of Dataproc extension available. Would you like to update the extension?',
+        expect.objectContaining({ autoClose: false })
+      );
+
+      const actions = (Notification.info as jest.Mock).mock.calls[0][1].actions;
+      actions[1].callback();
+      expect(Notification.warning).toHaveBeenCalledWith(
+        'Update Cancelled bu user'
+      );
+    });
+
+    it('should call updatePlugin and reload page when user clicks Update', async () => {
+      const reloadMock = jest.fn();
+      jest.spyOn(window, 'location', 'get').mockReturnValue({
+        ...window.location,
+        reload: reloadMock
+      } as Location);
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({});
+        }
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.resolve({ status: 'OK' });
+        }
+        if (endpoint.startsWith('jupyterlabVersion')) {
+          return Promise.resolve('99.0.0');
+        }
+        if (endpoint.startsWith('updatePlugin')) {
+          return Promise.resolve({});
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+      resolveRestored();
+      await flushPromises();
+
+      const actions = (Notification.info as jest.Mock).mock.calls[0][1].actions;
+      await actions[0].callback();
+
+      expect(logSpy).toHaveBeenCalledWith(
+        'Update JupyterLab to the latest version'
+      );
+      expect(requestAPI).toHaveBeenCalledWith(
+        'updatePlugin?packageName=dataproc_jupyter_plugin',
+        { method: 'POST' }
+      );
+      expect(reloadMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('should notify error when updatePlugin fails during Update action', async () => {
+      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({});
+        }
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.resolve({ status: 'OK' });
+        }
+        if (endpoint.startsWith('jupyterlabVersion')) {
+          return Promise.resolve('99.0.0');
+        }
+        if (endpoint.startsWith('updatePlugin')) {
+          return Promise.reject(new Error('pip install failed'));
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+      resolveRestored();
+      await flushPromises();
+
+      const actions = (Notification.info as jest.Mock).mock.calls[0][1].actions;
+      await actions[0].callback();
+
+      expect(logSpy).toHaveBeenCalledWith(
+        'Update JupyterLab to the latest version'
+      );
+      expect(Notification.error).toHaveBeenCalledWith(
+        expect.stringContaining('Update failed.')
+      );
+    });
+
+    it('should notify error and log failure when fetching JupyterLab version fails', async () => {
+      const errorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const versionError = new Error('version endpoint error');
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({});
+        }
+        if (endpoint.startsWith('checkResourceManager')) {
+          return Promise.resolve({ status: 'OK' });
+        }
+        if (endpoint.startsWith('jupyterlabVersion')) {
+          return Promise.reject(versionError);
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+      resolveRestored();
+      await flushPromises();
+
+      expect(Notification.error).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to fetch JupyterLab version:')
+      );
+      expect(errorSpy).toHaveBeenCalledWith(
+        'Failed to check API status:',
+        versionError
       );
     });
   });
 
   describe('5. Component Commands Registration & Execution', () => {
     beforeEach(async () => {
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
+      await activateExtension();
     });
 
     it('should register and execute create-runtime-template-component command', () => {
@@ -739,6 +1190,99 @@ describe('extension index.ts comprehensive test suite', () => {
       expect(NotebookTemplateService.handleClickService).toHaveBeenCalled();
     });
 
+    it('should download BigQuery notebook to local workspace path with injected PROJECT_ID and REGION', async () => {
+      const command = commandsMap.get('create-bigquery-notebook-component');
+      const notebookContent: any = {
+        cells: [{}, {}, { source: ['# Config\n', '', ''] }]
+      };
+      (
+        NotebookTemplateService.handleClickService as jest.Mock
+      ).mockImplementationOnce(async (template, cb) => {
+        await cb(notebookContent, template.url);
+      });
+
+      await command.execute();
+
+      const expectedPath = `workspace/path${path.sep}bigframes_quickstart.ipynb`;
+      expect(notebookContent.cells[2].source[1]).toBe(
+        "PROJECT_ID = 'test-project' \n"
+      );
+      expect(notebookContent.cells[2].source[2]).toBe(
+        "REGION = 'us-central1'\n"
+      );
+      expect(appMock.serviceManager.contents.save).toHaveBeenCalledWith(
+        expectedPath,
+        {
+          type: 'file',
+          format: 'text',
+          content: JSON.stringify(notebookContent)
+        }
+      );
+      expect(appMock.shell.currentWidget.update).toHaveBeenCalled();
+      expect(appMock.commands.execute).toHaveBeenCalledWith('docmanager:open', {
+        path: expectedPath
+      });
+    });
+
+    it('should download BigQuery notebook to root when file browser path starts with gs: and skip injection when credentials are null', async () => {
+      const command = commandsMap.get('create-bigquery-notebook-component');
+      factoryMock.tracker.currentWidget = {
+        model: { path: 'gs://my-bucket/notebooks' }
+      };
+      appMock.shell.currentWidget = null;
+      (authApi as jest.Mock).mockResolvedValueOnce(null);
+
+      const gcsNotebookContent: any = {
+        cells: [
+          {},
+          {},
+          { source: ['', 'unchanged-project', 'unchanged-region'] }
+        ]
+      };
+      (
+        NotebookTemplateService.handleClickService as jest.Mock
+      ).mockImplementationOnce(async (template, cb) => {
+        await cb(gcsNotebookContent, template.url);
+      });
+
+      await command.execute();
+
+      const expectedPath = `${path.sep}bigframes_quickstart.ipynb`;
+      expect(gcsNotebookContent.cells[2].source[1]).toBe('unchanged-project');
+      expect(gcsNotebookContent.cells[2].source[2]).toBe('unchanged-region');
+      expect(appMock.serviceManager.contents.save).toHaveBeenCalledWith(
+        expectedPath,
+        expect.objectContaining({ type: 'file', format: 'text' })
+      );
+      expect(appMock.commands.execute).toHaveBeenCalledWith('docmanager:open', {
+        path: expectedPath
+      });
+    });
+
+    it('should log error and abort download when no active file browser widget exists', async () => {
+      const errorSpy = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => {});
+      const command = commandsMap.get('create-bigquery-notebook-component');
+      factoryMock.tracker.currentWidget = null;
+
+      const notebookContent: any = {
+        cells: [{}, {}, { source: ['', '', ''] }]
+      };
+      (
+        NotebookTemplateService.handleClickService as jest.Mock
+      ).mockImplementationOnce(async (template, cb) => {
+        await cb(notebookContent, template.url);
+      });
+
+      await command.execute();
+
+      expect(errorSpy).toHaveBeenCalledWith(
+        'No active file browser widget found.'
+      );
+      expect(appMock.serviceManager.contents.save).not.toHaveBeenCalled();
+    });
+
     it('should filter icon when isPalette is true on commands with icon functions', () => {
       const templateCmd = commandsMap.get('create-runtime-template-component');
       expect(templateCmd.icon({ isPalette: true })).toBeNull();
@@ -763,22 +1307,9 @@ describe('extension index.ts comprehensive test suite', () => {
   });
 
   describe('6. Launcher Items & Dynamic Kernels', () => {
-    beforeEach(async () => {
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-    });
+    it('should add BigQuery Notebooks launcher entry when bigquery is enabled', async () => {
+      await activateExtension();
 
-    it('should add BigQuery Notebooks launcher entry when bigquery is enabled', () => {
       expect(launcherMock.add).toHaveBeenCalledWith(
         expect.objectContaining({
           command: 'create-bigquery-notebook-component',
@@ -788,14 +1319,15 @@ describe('extension index.ts comprehensive test suite', () => {
       );
     });
 
-    it('should add serverless and cluster notebook kernel commands to launcher', async () => {
+    it('should add serverless and cluster notebook kernel commands to launcher and execute serverless kernel command', async () => {
+      await activateExtension();
+
       expect(launcherMock.add).toHaveBeenCalledWith(
         expect.objectContaining({
           command: 'notebook:create-session-kernel',
           category: 'Dataproc Serverless Spark'
         })
       );
-
       expect(launcherMock.add).toHaveBeenCalledWith(
         expect.objectContaining({
           command: 'notebook:create-cluster-kernel',
@@ -803,11 +1335,16 @@ describe('extension index.ts comprehensive test suite', () => {
         })
       );
 
-      // Test executing dynamic notebook creation command
       const sessionKernelCmd = commandsMap.get(
         'notebook:create-session-kernel'
       );
       expect(sessionKernelCmd).toBeDefined();
+      expect(sessionKernelCmd.icon()).toBeDefined();
+      expect(iconDisplay).toHaveBeenCalledWith(
+        DEFAULT_KERNEL_SPECS.kernelspecs['session-kernel'],
+        themeManagerMock
+      );
+
       await sessionKernelCmd.execute();
 
       expect(appMock.commands.execute).toHaveBeenCalledWith(
@@ -827,7 +1364,64 @@ describe('extension index.ts comprehensive test suite', () => {
       );
     });
 
-    it('should add static commands to launcher with correct categories and ranks', () => {
+    it('should execute dynamic cluster notebook kernel command and resolve cluster kernel icon', async () => {
+      await activateExtension();
+
+      const clusterKernelCmd = commandsMap.get(
+        'notebook:create-cluster-kernel'
+      );
+      expect(clusterKernelCmd).toBeDefined();
+      expect(clusterKernelCmd.icon()).toBeDefined();
+      expect(iconDisplay).toHaveBeenCalledWith(
+        DEFAULT_KERNEL_SPECS.kernelspecs['cluster-kernel'],
+        themeManagerMock
+      );
+
+      await clusterKernelCmd.execute();
+
+      expect(appMock.commands.execute).toHaveBeenCalledWith(
+        'docmanager:new-untitled',
+        {
+          type: 'notebook',
+          path: '',
+          kernel: { name: 'cluster-kernel' }
+        }
+      );
+      expect(appMock.commands.execute).toHaveBeenCalledWith('docmanager:open', {
+        kernel: { name: 'cluster-kernel' },
+        path: 'test-doc-path',
+        factory: 'notebook'
+      });
+    });
+
+    it('should ignore undefined kernel specs and kernels without endpointParentResource', async () => {
+      (KernelSpecAPI.getSpecs as jest.Mock).mockResolvedValueOnce({
+        kernelspecs: {
+          'undefined-spec': undefined,
+          'no-endpoint-kernel': {
+            name: 'no-endpoint-kernel',
+            display_name: 'No Endpoint',
+            argv: ['python'],
+            resources: {},
+            metadata: {}
+          }
+        }
+      });
+
+      await activateExtension();
+
+      expect(commandsMap.has('notebook:create-undefined-spec')).toBe(false);
+      expect(commandsMap.has('notebook:create-no-endpoint-kernel')).toBe(false);
+      expect(launcherMock.add).not.toHaveBeenCalledWith(
+        expect.objectContaining({
+          category: 'Dataproc Cluster Notebooks'
+        })
+      );
+    });
+
+    it('should add static commands to launcher with correct categories and ranks', async () => {
+      await activateExtension();
+
       expect(launcherMock.add).toHaveBeenCalledWith(
         expect.objectContaining({
           command: 'create-runtime-profile-component',
@@ -860,7 +1454,6 @@ describe('extension index.ts comprehensive test suite', () => {
     });
 
     it('should add create-runtime-template-component to launcher when runtime profile is disabled', async () => {
-      launcherMock.add.mockClear();
       (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
         if (endpoint === 'settings') {
           return Promise.resolve({
@@ -873,18 +1466,7 @@ describe('extension index.ts comprehensive test suite', () => {
         return Promise.resolve({});
       });
 
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
+      await activateExtension();
 
       expect(launcherMock.add).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -899,7 +1481,15 @@ describe('extension index.ts comprehensive test suite', () => {
       );
     });
 
-    it('should execute apputils:notify on extension load', () => {
+    it('should skip launcher registration when optional launcher is not provided', async () => {
+      await activateExtension({ launcher: null });
+
+      expect(launcherMock.add).not.toHaveBeenCalled();
+    });
+
+    it('should execute apputils:notify with BigQuery message on extension load when bigquery is enabled', async () => {
+      await activateExtension();
+
       expect(appMock.commands.execute).toHaveBeenCalledWith(
         'apputils:notify',
         expect.objectContaining({
@@ -908,57 +1498,44 @@ describe('extension index.ts comprehensive test suite', () => {
         })
       );
     });
+
+    it('should execute apputils:notify with Dataproc message on extension load when bigquery is disabled', async () => {
+      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
+        if (endpoint === 'settings') {
+          return Promise.resolve({
+            enable_bigquery_integration: false,
+            enable_metastore_integration: false
+          });
+        }
+        return Promise.resolve({});
+      });
+
+      await activateExtension();
+
+      expect(appMock.commands.execute).toHaveBeenCalledWith(
+        'apputils:notify',
+        expect.objectContaining({
+          message: 'Dataproc Jupyter Plugin Successfully Loaded',
+          type: 'success'
+        })
+      );
+    });
   });
 
   describe('7. LabShell currentChanged and titleChanged lifecycle', () => {
-    it('should handle tab switches and title changes for NotebookPanel', async () => {
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
+    it('should handle tab switches and title changes for cluster NotebookPanel and stash oldNotebookValue on Launcher switch', async () => {
+      await activateExtension();
       expect(currentChangedCallback).toBeDefined();
 
       const titleChangedConnectMock = jest.fn();
       const titleChangedDisconnectMock = jest.fn();
+      const mockNotebookPanel = createMockNotebookPanel(
+        'test.ipynb',
+        'cluster-kernel',
+        titleChangedConnectMock,
+        titleChangedDisconnectMock
+      );
 
-      const mockNotebookPanel = Object.create(NotebookPanel.prototype, {
-        title: {
-          value: {
-            label: 'test.ipynb',
-            owner: null,
-            changed: {
-              connect: titleChangedConnectMock,
-              disconnect: titleChangedDisconnectMock
-            }
-          }
-        },
-        toolbar: {
-          value: {
-            update: jest.fn()
-          }
-        },
-        sessionContext: {
-          value: {
-            session: {
-              kernel: {
-                name: 'cluster-kernel'
-              }
-            }
-          }
-        }
-      });
-      mockNotebookPanel.title.owner = mockNotebookPanel;
-
-      // Simulate tab switch to NotebookPanel
       await currentChangedCallback!(labShellMock, {
         oldValue: null,
         newValue: mockNotebookPanel
@@ -967,757 +1544,30 @@ describe('extension index.ts comprehensive test suite', () => {
       expect(titleChangedConnectMock).toHaveBeenCalled();
       expect(mockNotebookPanel.toolbar.update).toHaveBeenCalled();
 
-      // Trigger title changed handler
       const titleChangedHandler = titleChangedConnectMock.mock.calls[0][0];
       await titleChangedHandler(mockNotebookPanel.title);
       expect(localStorage.getItem('notebookValue')).toBe('c1/clusters');
+      expect(document.title).toBe('test.ipynb');
 
-      // Simulate tab switch to Launcher widget
-      const mockLauncherWidget: any = {
-        title: { label: 'Launcher' }
-      };
       await currentChangedCallback!(labShellMock, {
         oldValue: mockNotebookPanel,
-        newValue: mockLauncherWidget
+        newValue: { title: { label: 'Launcher' } }
       });
 
       expect(titleChangedDisconnectMock).toHaveBeenCalled();
       expect(localStorage.getItem('oldNotebookValue')).toBe('c1/clusters');
       expect(localStorage.getItem('notebookValue')).toBeNull();
     });
-  });
 
-  describe('8. App restoration, API enablement checks, and JupyterLab version updates', () => {
-    const flushPromises = () => new Promise(resolve => setTimeout(resolve, 0));
-
-    it('should run executeApiChecks after app.restored resolves when document is ready', async () => {
-      let resolveRestored!: () => void;
-      appMock.restored = new Promise<void>(resolve => {
-        resolveRestored = resolve;
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      resolveRestored();
-      await flushPromises();
-
-      expect(RuntimeService.checkDataprocApiEnabledService).toHaveBeenCalled();
-      expect(
-        BigQueryService.checkBigQueryDatasetsAPIService
-      ).toHaveBeenCalled();
-      expect(requestAPI).toHaveBeenCalledWith(
-        'jupyterlabVersion?packageName=dataproc_jupyter_plugin',
-        { method: 'GET' }
-      );
-    });
-
-    it('should defer executeApiChecks until window load event when document.readyState is loading', async () => {
-      const originalDescriptor = Object.getOwnPropertyDescriptor(
-        document,
-        'readyState'
-      );
-      Object.defineProperty(document, 'readyState', {
-        configurable: true,
-        get: () => 'loading'
-      });
-
-      try {
-        let resolveRestored!: () => void;
-        appMock.restored = new Promise<void>(resolve => {
-          resolveRestored = resolve;
-        });
-
-        await (extension.activate as any)(
-          appMock,
-          factoryMock,
-          defaultFileBrowserMock,
-          launcherMock,
-          mainMenuMock,
-          labShellMock,
-          notebookTrackerMock,
-          themeManagerMock,
-          settingRegistryMock,
-          documentManagerMock
-        );
-
-        resolveRestored();
-        await flushPromises();
-
-        expect(requestAPI).not.toHaveBeenCalledWith(
-          'jupyterlabVersion?packageName=dataproc_jupyter_plugin',
-          { method: 'GET' }
-        );
-
-        window.dispatchEvent(new Event('load'));
-        await flushPromises();
-
-        expect(requestAPI).toHaveBeenCalledWith(
-          'jupyterlabVersion?packageName=dataproc_jupyter_plugin',
-          { method: 'GET' }
-        );
-      } finally {
-        if (originalDescriptor) {
-          Object.defineProperty(document, 'readyState', originalDescriptor);
-        } else {
-          Object.defineProperty(document, 'readyState', {
-            configurable: true,
-            get: () => 'complete'
-          });
-        }
-      }
-    });
-
-    it('should log error when app.restored rejects', async () => {
-      const errorSpy = jest
-        .spyOn(console, 'error')
-        .mockImplementation(() => {});
-      appMock.restored = Promise.reject(new Error('restoration failed'));
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      await flushPromises();
-
-      expect(errorSpy).toHaveBeenCalledWith(
-        'Error during app restoration:',
-        expect.any(Error)
-      );
-      errorSpy.mockRestore();
-    });
-
-    it('should notify and open enable links when Dataproc or BigQuery APIs are disabled', async () => {
-      const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
-      let resolveRestored!: () => void;
-      appMock.restored = new Promise<void>(resolve => {
-        resolveRestored = resolve;
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      (
-        RuntimeService.checkDataprocApiEnabledService as jest.Mock
-      ).mockResolvedValueOnce({ is_enabled: false });
-      (
-        BigQueryService.checkBigQueryDatasetsAPIService as jest.Mock
-      ).mockResolvedValueOnce({ is_enabled: false });
-
-      resolveRestored();
-      await flushPromises();
-
-      expect(Notification.error).toHaveBeenCalledWith(
-        'The Cloud Dataproc API is not enabled.',
-        expect.any(Object)
-      );
-      expect(Notification.error).toHaveBeenCalledWith(
-        'The BigQuery API is not enabled.',
-        expect.any(Object)
-      );
-
-      for (const [, options] of (Notification.error as jest.Mock).mock.calls) {
-        options?.actions?.[0]?.callback();
-      }
-
-      expect(openSpy).toHaveBeenCalledWith(
-        'https://console.cloud.google.com/apis/library/dataproc.googleapis.com?project=test-project',
-        '_blank'
-      );
-      expect(openSpy).toHaveBeenCalledWith(
-        'https://console.cloud.google.com/apis/library/bigquery.googleapis.com?project=test-project',
-        '_blank'
-      );
-      openSpy.mockRestore();
-    });
-
-    it('should skip API checks on login_error and skip BigQuery check when integration is disabled', async () => {
-      appMock.restored = new Promise<void>(() => {});
-      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({
-            enable_bigquery_integration: false,
-            enable_metastore_integration: false
-          });
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.resolve({ status: 'OK' });
-        }
-        return Promise.resolve({});
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      (
-        BigQueryService.checkBigQueryDatasetsAPIService as jest.Mock
-      ).mockClear();
-      eventEmitter.emit('dataprocConfigChange', 'config updated');
-      await flushPromises();
-
-      expect(
-        BigQueryService.checkBigQueryDatasetsAPIService
-      ).not.toHaveBeenCalled();
-
-      (RuntimeService.checkDataprocApiEnabledService as jest.Mock).mockClear();
-      (authApi as jest.Mock).mockResolvedValueOnce({
-        login_error: true,
-        config_error: false
-      });
-      eventEmitter.emit('dataprocConfigChange', 'config updated');
-      await flushPromises();
-
-      expect(
-        RuntimeService.checkDataprocApiEnabledService
-      ).not.toHaveBeenCalled();
-    });
-
-    it('should prompt for JupyterLab plugin update and handle Update success, Update failure, and Ignore actions', async () => {
-      const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-      const errorSpy = jest
-        .spyOn(console, 'error')
-        .mockImplementation(() => {});
-      let resolveRestored!: () => void;
-      appMock.restored = new Promise<void>(resolve => {
-        resolveRestored = resolve;
-      });
-
-      let failUpdate = false;
-      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({
-            enable_bigquery_integration: true,
-            enable_metastore_integration: true
-          });
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.resolve({ status: 'OK' });
-        }
-        if (endpoint.startsWith('jupyterlabVersion')) {
-          return Promise.resolve('99.0.0');
-        }
-        if (endpoint.startsWith('updatePlugin')) {
-          return failUpdate
-            ? Promise.reject(new Error('pip install failed'))
-            : Promise.resolve({});
-        }
-        return Promise.resolve({});
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      resolveRestored();
-      await flushPromises();
-
-      expect(Notification.info).toHaveBeenCalledWith(
-        'There is a new version of Dataproc extension available. Would you like to update the extension?',
-        expect.objectContaining({ autoClose: false })
-      );
-
-      const actions = (Notification.info as jest.Mock).mock.calls[0][1].actions;
-
-      // Ignore action
-      actions[1].callback();
-      expect(Notification.warning).toHaveBeenCalledWith(
-        'Update Cancelled bu user'
-      );
-
-      // Update action (success)
-      await actions[0].callback();
-      expect(requestAPI).toHaveBeenCalledWith(
-        'updatePlugin?packageName=dataproc_jupyter_plugin',
-        { method: 'POST' }
-      );
-
-      // Update action (failure)
-      failUpdate = true;
-      await actions[0].callback();
-      expect(Notification.error).toHaveBeenCalledWith(
-        expect.stringContaining('Update failed.')
-      );
-
-      logSpy.mockRestore();
-      errorSpy.mockRestore();
-    });
-
-    it('should notify error and catch when fetching JupyterLab version fails', async () => {
-      const errorSpy = jest
-        .spyOn(console, 'error')
-        .mockImplementation(() => {});
-      let resolveRestored!: () => void;
-      appMock.restored = new Promise<void>(resolve => {
-        resolveRestored = resolve;
-      });
-
-      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({
-            enable_bigquery_integration: false,
-            enable_metastore_integration: false
-          });
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.resolve({ status: 'OK' });
-        }
-        if (endpoint.startsWith('jupyterlabVersion')) {
-          return Promise.reject(new Error('version endpoint error'));
-        }
-        return Promise.resolve({});
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      resolveRestored();
-      await flushPromises();
-
-      expect(Notification.error).toHaveBeenCalledWith(
-        expect.stringContaining('Failed to fetch JupyterLab version:')
-      );
-      expect(errorSpy).toHaveBeenCalledWith(
-        'Failed to check API status:',
-        expect.any(Error)
-      );
-      errorSpy.mockRestore();
-    });
-  });
-
-  describe('9. Side panel flag coercion, guards, and Resource Manager error paths', () => {
-    it('should coerce string and undefined feature flags in onSidePanelEnabled and handle panel/theme guards', async () => {
-      appMock.restored = new Promise<void>(() => {});
-      localStorage.setItem('notebookValue', 'existing-c1/clusters');
-      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({
-            enable_bigquery_integration: 'true',
-            enable_metastore_integration: '1'
-          });
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.resolve({ status: 'OK' });
-        }
-        return Promise.resolve({});
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      expect(BigQueryWidget).toHaveBeenCalled();
-      // Initialized in onSidePanelEnabled and reloaded in loadDpmsWidget (disposing previous dpmsWidget)
-      expect(dpmsWidget).toHaveBeenCalledTimes(2);
-
-      // Theme fallback when themeManager.theme is null
-      themeManagerMock.theme = null;
-      themeChangedCallback!();
-
-      // Activate with string 'false' and undefined flags to hit false coercion and early-return guards
-      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({
-            enable_bigquery_integration: 'false',
-            enable_metastore_integration: undefined
-          });
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.resolve({ status: 'OK' });
-        }
-        return Promise.resolve({});
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      // Both panels are undefined here, hitting early return in onThemeChanged
-      themeChangedCallback!();
-    });
-
-    it('should handle Resource Manager Enable action, generic API errors, and request failures', async () => {
-      const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
-      const errorSpy = jest
-        .spyOn(console, 'error')
-        .mockImplementation(() => {});
-      appMock.restored = new Promise<void>(() => {});
-
-      // 1. Not-enabled error Enable link callback
-      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({});
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.resolve({
-            status: 'ERROR',
-            error:
-              'API [cloudresourcemanager.googleapis.com] not enabled on project'
-          });
-        }
-        return Promise.resolve({});
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      const rmActions = (Notification.error as jest.Mock).mock.calls[0][1]
-        .actions;
-      rmActions[0].callback();
-      expect(openSpy).toHaveBeenCalledWith(
-        'https://console.cloud.google.com/apis/library/cloudresourcemanager.googleapis.com?project=test-project',
-        '_blank'
-      );
-
-      // 2. Generic Resource Manager API error
-      (Notification.error as jest.Mock).mockClear();
-      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({});
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.resolve({
-            status: 'ERROR',
-            error: 'Permission denied on resource'
-          });
-        }
-        return Promise.resolve({});
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      expect(Notification.error).toHaveBeenCalledWith(
-        'Error calling into the Resource Manager API: Permission denied on resource',
-        { autoClose: false }
-      );
-
-      // 3. Request rejection caught gracefully
-      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({});
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.reject(new Error('network failure'));
-        }
-        return Promise.resolve({});
-      });
-
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      expect(errorSpy).toHaveBeenCalledWith(
-        'Resource manager Api not enabled:',
-        expect.any(Error)
-      );
-
-      openSpy.mockRestore();
-      errorSpy.mockRestore();
-    });
-  });
-
-  describe('10. BigQuery notebook download, cluster kernel execution, and title/tab edge cases', () => {
-    it('should download BigQuery quickstart notebook for local and gs: paths and handle missing file browser', async () => {
-      appMock.restored = new Promise<void>(() => {});
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      const bqCmd = commandsMap.get('create-bigquery-notebook-component');
-
-      // 1. Local workspace path with valid credentials
-      const localNotebookContent: any = {
-        cells: [{}, {}, { source: ['# Config\n', '', ''] }]
-      };
-      (
-        NotebookTemplateService.handleClickService as jest.Mock
-      ).mockImplementationOnce(async (template, cb) => {
-        await cb(localNotebookContent, template.url);
-      });
-
-      await bqCmd.execute();
-
-      expect(localNotebookContent.cells[2].source[1]).toBe(
-        "PROJECT_ID = 'test-project' \n"
-      );
-      expect(localNotebookContent.cells[2].source[2]).toBe(
-        "REGION = 'us-central1'\n"
-      );
-      expect(appMock.serviceManager.contents.save).toHaveBeenCalledWith(
-        'workspace/path/bigframes_quickstart.ipynb',
-        {
-          type: 'file',
-          format: 'text',
-          content: JSON.stringify(localNotebookContent)
-        }
-      );
-      expect(appMock.shell.currentWidget.update).toHaveBeenCalled();
-      expect(appMock.commands.execute).toHaveBeenCalledWith('docmanager:open', {
-        path: 'workspace/path/bigframes_quickstart.ipynb'
-      });
-
-      // 2. gs: path with null credentials and null currentWidget
-      factoryMock.tracker.currentWidget = {
-        model: { path: 'gs://my-bucket/notebooks' }
-      };
-      appMock.shell.currentWidget = null;
-      (authApi as jest.Mock).mockResolvedValueOnce(null);
-      const gcsNotebookContent: any = {
-        cells: [
-          {},
-          {},
-          { source: ['', 'unchanged-project', 'unchanged-region'] }
-        ]
-      };
-      (
-        NotebookTemplateService.handleClickService as jest.Mock
-      ).mockImplementationOnce(async (template, cb) => {
-        await cb(gcsNotebookContent, template.url);
-      });
-
-      await bqCmd.execute();
-
-      expect(gcsNotebookContent.cells[2].source[1]).toBe('unchanged-project');
-      expect(appMock.serviceManager.contents.save).toHaveBeenCalledWith(
-        '/bigframes_quickstart.ipynb',
-        expect.objectContaining({ type: 'file', format: 'text' })
-      );
-
-      // 3. No active file browser widget
-      const errorSpy = jest
-        .spyOn(console, 'error')
-        .mockImplementation(() => {});
-      factoryMock.tracker.currentWidget = null;
-      appMock.serviceManager.contents.save.mockClear();
-      (
-        NotebookTemplateService.handleClickService as jest.Mock
-      ).mockImplementationOnce(async (template, cb) => {
-        await cb(localNotebookContent, template.url);
-      });
-
-      await bqCmd.execute();
-
-      expect(errorSpy).toHaveBeenCalledWith(
-        'No active file browser widget found.'
-      );
-      expect(appMock.serviceManager.contents.save).not.toHaveBeenCalled();
-      errorSpy.mockRestore();
-    });
-
-    it('should execute cluster kernel command, resolve kernel icons, and handle missing launcher', async () => {
-      appMock.restored = new Promise<void>(() => {});
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      const sessionKernelCmd = commandsMap.get(
-        'notebook:create-session-kernel'
-      );
-      const clusterKernelCmd = commandsMap.get(
-        'notebook:create-cluster-kernel'
-      );
-
-      expect(sessionKernelCmd.icon()).toBeDefined();
-      expect(clusterKernelCmd.icon()).toBeDefined();
-      expect(iconDisplay).toHaveBeenCalledTimes(2);
-
-      await clusterKernelCmd.execute();
-      expect(appMock.commands.execute).toHaveBeenCalledWith(
-        'docmanager:new-untitled',
-        {
-          type: 'notebook',
-          path: '',
-          kernel: { name: 'cluster-kernel' }
-        }
-      );
-      expect(appMock.commands.execute).toHaveBeenCalledWith('docmanager:open', {
-        kernel: { name: 'cluster-kernel' },
-        path: 'test-doc-path',
-        factory: 'notebook'
-      });
-
-      // Activate without optional launcher
-      launcherMock.add.mockClear();
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        null,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-      expect(launcherMock.add).not.toHaveBeenCalled();
-    });
-
-    it('should handle session kernel title changes, missing kernels, non-notebook titles, and restoring oldNotebookValue', async () => {
-      appMock.restored = new Promise<void>(() => {});
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
+    it('should update notebookValue for session kernels and avoid recreating dpmsWidget when session is unchanged', async () => {
+      await activateExtension();
 
       const titleChangedConnectMock = jest.fn();
-      const titleChangedDisconnectMock = jest.fn();
-
-      const mockSessionPanel = Object.create(NotebookPanel.prototype, {
-        title: {
-          value: {
-            label: 'session.ipynb',
-            owner: null,
-            changed: {
-              connect: titleChangedConnectMock,
-              disconnect: titleChangedDisconnectMock
-            }
-          }
-        },
-        toolbar: {
-          value: { update: jest.fn() }
-        },
-        sessionContext: {
-          writable: true,
-          value: {
-            session: {
-              kernel: { name: 'session-kernel' }
-            }
-          }
-        }
-      });
-      mockSessionPanel.title.owner = mockSessionPanel;
+      const mockSessionPanel = createMockNotebookPanel(
+        'session.ipynb',
+        'session-kernel',
+        titleChangedConnectMock
+      );
 
       await currentChangedCallback!(labShellMock, {
         oldValue: null,
@@ -1725,17 +1575,36 @@ describe('extension index.ts comprehensive test suite', () => {
       });
 
       const onTitleChanged = titleChangedConnectMock.mock.calls[0][0];
+      (dpmsWidget as unknown as jest.Mock).mockClear();
 
-      // Session kernel updates notebookValue and document.title
       await onTitleChanged(mockSessionPanel.title);
       expect(localStorage.getItem('notebookValue')).toBe('kernel/sessions');
       expect(document.title).toBe('session.ipynb');
+      expect(dpmsWidget).toHaveBeenCalledTimes(1);
 
-      // Calling again with same sessionValue leaves notebookValue unchanged
+      // Re-triggering with the same sessionValue should not recreate dpmsWidget
+      (dpmsWidget as unknown as jest.Mock).mockClear();
       await onTitleChanged(mockSessionPanel.title);
       expect(localStorage.getItem('notebookValue')).toBe('kernel/sessions');
+      expect(dpmsWidget).not.toHaveBeenCalled();
+    });
 
-      // Switch to Clusters tab stashes oldNotebookValue and clears notebookValue
+    it('should restore oldNotebookValue when switching from a plugin tab back to a regular widget', async () => {
+      await activateExtension();
+
+      const titleChangedConnectMock = jest.fn();
+      const mockSessionPanel = createMockNotebookPanel(
+        'session.ipynb',
+        'session-kernel',
+        titleChangedConnectMock
+      );
+
+      await currentChangedCallback!(labShellMock, {
+        oldValue: null,
+        newValue: mockSessionPanel
+      });
+      await titleChangedConnectMock.mock.calls[0][0](mockSessionPanel.title);
+
       await currentChangedCallback!(labShellMock, {
         oldValue: mockSessionPanel,
         newValue: { title: { label: 'Clusters' } }
@@ -1743,45 +1612,50 @@ describe('extension index.ts comprehensive test suite', () => {
       expect(localStorage.getItem('oldNotebookValue')).toBe('kernel/sessions');
       expect(localStorage.getItem('notebookValue')).toBeNull();
 
-      // Switch back to a non-plugin widget restores oldNotebookValue into notebookValue
       await currentChangedCallback!(labShellMock, {
         oldValue: { title: { label: 'Clusters' } },
         newValue: { title: { label: 'script.py' } }
       });
       expect(localStorage.getItem('notebookValue')).toBe('kernel/sessions');
+    });
 
-      // Switch to Serverless then back when oldNotebookValue is removed
-      await currentChangedCallback!(labShellMock, {
-        oldValue: null,
-        newValue: { title: { label: 'Serverless' } }
-      });
-      localStorage.removeItem('oldNotebookValue');
+    it('should default notebookValue to empty string when switching to a regular widget without oldNotebookValue', async () => {
+      await activateExtension();
+
       await currentChangedCallback!(labShellMock, {
         oldValue: null,
         newValue: { title: { label: 'README.md' } }
       });
+
       expect(localStorage.getItem('notebookValue')).toBe('');
-
-      // NotebookPanel without an active kernel clears notebookValue
-      localStorage.setItem('notebookValue', 'kernel/sessions');
-      mockSessionPanel.sessionContext = { session: null };
-      await onTitleChanged(mockSessionPanel.title);
-      expect(localStorage.getItem('notebookValue')).toBeNull();
-
-      // Non-NotebookPanel title owner still updates document.title
-      await onTitleChanged({ label: 'Plain Tab', owner: {} });
-      expect(document.title).toBe('Plain Tab');
     });
 
-    it('should safely handle undefined credentials, sparse kernel specs, and unmapped kernels', async () => {
-      let resolveRestored!: () => void;
-      appMock.restored = new Promise<void>(resolve => {
-        resolveRestored = resolve;
+    it('should clear notebookValue when NotebookPanel has no active kernel', async () => {
+      await activateExtension();
+
+      const titleChangedConnectMock = jest.fn();
+      const mockKernelLessPanel = createMockNotebookPanel(
+        'idle.ipynb',
+        null,
+        titleChangedConnectMock
+      );
+
+      await currentChangedCallback!(labShellMock, {
+        oldValue: null,
+        newValue: mockKernelLessPanel
       });
-      (authApi as jest.Mock).mockResolvedValue(undefined);
+
+      localStorage.setItem('notebookValue', 'c1/clusters');
+      const onTitleChanged = titleChangedConnectMock.mock.calls[0][0];
+      await onTitleChanged(mockKernelLessPanel.title);
+
+      expect(localStorage.getItem('notebookValue')).toBeNull();
+      expect(document.title).toBe('idle.ipynb');
+    });
+
+    it('should update document.title without setting notebookValue for unmapped kernels or non-NotebookPanel owners', async () => {
       (KernelSpecAPI.getSpecs as jest.Mock).mockResolvedValueOnce({
         kernelspecs: {
-          'undefined-spec': undefined,
           'no-endpoint-kernel': {
             name: 'no-endpoint-kernel',
             display_name: 'No Endpoint',
@@ -1791,85 +1665,44 @@ describe('extension index.ts comprehensive test suite', () => {
           }
         }
       });
-      (requestAPI as jest.Mock).mockImplementation((endpoint: string) => {
-        if (endpoint === 'settings') {
-          return Promise.resolve({
-            enable_bigquery_integration: true,
-            enable_metastore_integration: false
-          });
-        }
-        if (endpoint.startsWith('checkResourceManager')) {
-          return Promise.resolve({ status: 'ERROR' });
-        }
-        if (endpoint.startsWith('jupyterlabVersion')) {
-          return Promise.resolve('0.1.0');
-        }
-        return Promise.resolve({});
-      });
 
-      await (extension.activate as any)(
-        appMock,
-        factoryMock,
-        defaultFileBrowserMock,
-        launcherMock,
-        mainMenuMock,
-        labShellMock,
-        notebookTrackerMock,
-        themeManagerMock,
-        settingRegistryMock,
-        documentManagerMock
-      );
-
-      resolveRestored();
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await activateExtension();
 
       const titleChangedConnectMock = jest.fn();
-      const mockUnknownKernelPanel = Object.create(NotebookPanel.prototype, {
-        title: {
-          value: {
-            label: 'local.ipynb',
-            owner: null,
-            changed: {
-              connect: titleChangedConnectMock,
-              disconnect: jest.fn()
-            }
-          }
-        },
-        toolbar: {
-          value: { update: jest.fn() }
-        },
-        sessionContext: {
-          writable: true,
-          value: {
-            session: {
-              kernel: { name: 'unregistered-kernel' }
-            }
-          }
-        }
-      });
-      mockUnknownKernelPanel.title.owner = mockUnknownKernelPanel;
+      const mockPanel = createMockNotebookPanel(
+        'unregistered.ipynb',
+        'unregistered-kernel',
+        titleChangedConnectMock
+      );
 
       await currentChangedCallback!(labShellMock, {
         oldValue: null,
-        newValue: mockUnknownKernelPanel
+        newValue: mockPanel
       });
 
       const onTitleChanged = titleChangedConnectMock.mock.calls[0][0];
-      await onTitleChanged(mockUnknownKernelPanel.title);
-      expect(document.title).toBe('local.ipynb');
+      (dpmsWidget as unknown as jest.Mock).mockClear();
 
-      mockUnknownKernelPanel.sessionContext = {
+      // 1. Kernel not in KernelSpecAPI specs
+      await onTitleChanged(mockPanel.title);
+      expect(document.title).toBe('unregistered.ipynb');
+      expect(localStorage.getItem('notebookValue')).toBeNull();
+      expect(dpmsWidget).not.toHaveBeenCalled();
+
+      // 2. Kernel spec without endpointParentResource (distinct title so assertion is non-vacuous)
+      mockPanel.title.label = 'no-endpoint.ipynb';
+      mockPanel.sessionContext = {
         session: { kernel: { name: 'no-endpoint-kernel' } }
       };
-      await onTitleChanged(mockUnknownKernelPanel.title);
-      expect(document.title).toBe('local.ipynb');
+      await onTitleChanged(mockPanel.title);
+      expect(document.title).toBe('no-endpoint.ipynb');
+      expect(localStorage.getItem('notebookValue')).toBeNull();
+      expect(dpmsWidget).not.toHaveBeenCalled();
 
-      // Reset authApi default mock for cleanliness
-      (authApi as jest.Mock).mockResolvedValue({
-        project_id: 'test-project',
-        login_error: false,
-        config_error: false
-      });
+      // 3. Non-NotebookPanel title owner
+      await onTitleChanged({ label: 'Plain Tab', owner: {} });
+      expect(document.title).toBe('Plain Tab');
+      expect(localStorage.getItem('notebookValue')).toBeNull();
     });
   });
 });
