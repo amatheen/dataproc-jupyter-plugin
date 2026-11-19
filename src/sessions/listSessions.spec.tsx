@@ -17,6 +17,8 @@
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const mockSessionDetailsProps = jest.fn();
+
 jest.mock('../handler/handler', () => ({
   requestAPI: jest.fn().mockResolvedValue({
     dataproc_url: 'https://dataproc.googleapis.com/',
@@ -41,17 +43,20 @@ jest.mock('../utils/utils', () => ({
 
 jest.mock('./sessionDetails', () => ({
   __esModule: true,
-  default: ({ sessionSelected, setDetailedSessionView }: any) => (
-    <div data-testid="mock-session-details">
-      <span>Details for {sessionSelected}</span>
-      <button
-        data-testid="back-to-sessions-btn"
-        onClick={() => setDetailedSessionView(false)}
-      >
-        Back
-      </button>
-    </div>
-  )
+  default: (props: any) => {
+    mockSessionDetailsProps(props);
+    return (
+      <div data-testid="mock-session-details">
+        <span>Details for {props.sessionSelected}</span>
+        <button
+          data-testid="back-to-sessions-btn"
+          onClick={() => props.setDetailedSessionView(false)}
+        >
+          Back
+        </button>
+      </div>
+    );
+  }
 }));
 
 import React, { act } from 'react';
@@ -74,7 +79,7 @@ import {
 
 describe('ListSessions Component', () => {
   let container: HTMLDivElement;
-  let root: Root;
+  let root: Root | null = null;
 
   const mockCredentials = {
     project_id: 'test-project',
@@ -91,10 +96,14 @@ describe('ListSessions Component', () => {
   });
 
   afterEach(() => {
-    act(() => {
-      root.unmount();
-    });
+    if (root) {
+      act(() => {
+        root?.unmount();
+      });
+      root = null;
+    }
     container.remove();
+    jest.restoreAllMocks();
   });
 
   const buildSessionRow = (
@@ -116,13 +125,25 @@ describe('ListSessions Component', () => {
     })
   });
 
+  const mockListSessions = (
+    buildRows: (
+      renderActions: (data: any) => React.JSX.Element
+    ) => Array<ReturnType<typeof buildSessionRow>>
+  ) =>
+    jest
+      .spyOn(SessionService, 'listSessionsAPIService')
+      .mockImplementation(async (renderActions, setIsLoading, setList) => {
+        setList(buildRows(renderActions));
+        setIsLoading(false);
+      });
+
   const renderComponent = async () => {
     await act(async () => {
-      root.render(<ListSessions />);
+      root?.render(<ListSessions />);
     });
   };
 
-  it('displays loading spinner while sessions are being fetched', async () => {
+  it('displays loading spinner while sessions are being fetched and cleans up polling on unmount', async () => {
     jest
       .spyOn(SessionService, 'listSessionsAPIService')
       .mockImplementation(async () => undefined);
@@ -131,83 +152,92 @@ describe('ListSessions Component', () => {
 
     expect(container.querySelector('[data-testid="loader"]')).not.toBeNull();
     expect(container.textContent).toContain('Loading Sessions');
+
+    act(() => {
+      root?.unmount();
+      root = null;
+    });
+
+    expect(PollingTimer).toHaveBeenCalledWith(
+      expect.any(Function),
+      true,
+      undefined
+    );
   });
 
   it('displays "No rows to display" when session list is empty and starts polling', async () => {
-    jest
-      .spyOn(SessionService, 'listSessionsAPIService')
-      .mockImplementation(async (_renderActions, setIsLoading, setList) => {
-        setList([]);
-        setIsLoading(false);
-      });
+    mockListSessions(() => []);
 
     await renderComponent();
 
     expect(container.querySelector('.no-data-style')?.textContent).toBe(
       'No rows to display'
     );
-    expect(PollingTimer).toHaveBeenCalled();
+    expect(PollingTimer).toHaveBeenCalledWith(
+      expect.any(Function),
+      false,
+      undefined
+    );
   });
 
-  it('renders ApiEnableDialog and handles both Enable and Cancel actions', async () => {
-    const windowOpenSpy = jest
-      .spyOn(window, 'open')
-      .mockImplementation(() => null);
+  test.each([
+    ['Enable', true],
+    ['Cancel', false]
+  ])(
+    'renders ApiEnableDialog and handles "%s" click (opensWindow=%s)',
+    async (buttonLabel, shouldOpenWindow) => {
+      const windowOpenSpy = jest
+        .spyOn(window, 'open')
+        .mockImplementation(() => null);
 
-    jest
-      .spyOn(SessionService, 'listSessionsAPIService')
-      .mockImplementation(
-        async (
-          _renderActions,
-          setIsLoading,
-          setList,
-          setApiDialogOpen,
-          _setPollingDisable,
-          setEnableLink
-        ) => {
-          setList([]);
-          setIsLoading(false);
-          setEnableLink('https://console.cloud.google.com/apis/dataproc');
-          setApiDialogOpen(true);
-        }
+      jest
+        .spyOn(SessionService, 'listSessionsAPIService')
+        .mockImplementation(
+          async (
+            _renderActions,
+            setIsLoading,
+            setList,
+            setApiDialogOpen,
+            _setPollingDisable,
+            setEnableLink
+          ) => {
+            setList([]);
+            setIsLoading(false);
+            setEnableLink('https://console.cloud.google.com/apis/dataproc');
+            setApiDialogOpen(true);
+          }
+        );
+
+      await renderComponent();
+
+      expect(document.body.textContent).toContain(
+        'The Cloud Dataproc API is not enabled for this project.'
       );
 
-    await renderComponent();
+      const actionBtn = Array.from(
+        document.body.querySelectorAll('button')
+      ).find(b => b.textContent === buttonLabel);
+      expect(actionBtn).toBeDefined();
 
-    expect(document.body.textContent).toContain(
-      'The Cloud Dataproc API is not enabled for this project.'
-    );
+      await act(async () => {
+        actionBtn?.click();
+      });
 
-    const cancelBtn = Array.from(document.body.querySelectorAll('button')).find(
-      b => b.textContent === 'Cancel'
-    );
-    await act(async () => {
-      cancelBtn?.click();
-    });
-    expect(windowOpenSpy).not.toHaveBeenCalled();
+      if (shouldOpenWindow) {
+        expect(windowOpenSpy).toHaveBeenCalledWith(
+          'https://console.cloud.google.com/apis/dataproc',
+          '_blank'
+        );
+      } else {
+        expect(windowOpenSpy).not.toHaveBeenCalled();
+      }
+      expect(document.body.textContent).not.toContain(
+        'The Cloud Dataproc API is not enabled for this project.'
+      );
+    }
+  );
 
-    // Re-render to verify Enable button path
-    await act(async () => {
-      root.unmount();
-    });
-    root = createRoot(container);
-    await renderComponent();
-
-    const enableBtn = Array.from(document.body.querySelectorAll('button')).find(
-      b => b.textContent === 'Enable'
-    );
-    await act(async () => {
-      enableBtn?.click();
-    });
-    expect(windowOpenSpy).toHaveBeenCalledWith(
-      'https://console.cloud.google.com/apis/dataproc',
-      '_blank'
-    );
-
-    windowOpenSpy.mockRestore();
-  });
-
-  it.each([
+  test.each([
     [STATUS_ACTIVE, 'active', false],
     [STATUS_TERMINATED, 'terminated', false],
     [STATUS_FAIL, 'failed', false],
@@ -215,23 +245,23 @@ describe('ListSessions Component', () => {
     [STATUS_CREATING, 'creating', true],
     [STATUS_PENDING, 'pending', true],
     [STATUS_TERMINATING, 'terminating', true],
-    [STATUS_DELETING, 'deleting', true]
+    [STATUS_DELETING, 'deleting', true],
+    ['', '', false]
   ])(
-    'renders status cell for %s with expected text "%s" and spinner=%s',
+    'renders status cell for "%s" with expected text "%s" and spinner=%s',
     async (statusValue, expectedLower, expectSpinner) => {
-      jest
-        .spyOn(SessionService, 'listSessionsAPIService')
-        .mockImplementation(async (renderActions, setIsLoading, setList) => {
-          setList([buildSessionRow(renderActions, 'sess-status', statusValue)]);
-          setIsLoading(false);
-        });
+      mockListSessions(renderActions => [
+        buildSessionRow(renderActions, 'sess-status', statusValue)
+      ]);
 
       await renderComponent();
 
-      const statusText = container.querySelector('.cluster-status');
-      expect(statusText?.textContent).toBe(expectedLower);
-      const loader = container.querySelector('[data-testid="loader"]');
-      expect(Boolean(loader)).toBe(expectSpinner);
+      expect(container.querySelector('.cluster-status')?.textContent).toBe(
+        expectedLower
+      );
+      expect(Boolean(container.querySelector('[data-testid="loader"]'))).toBe(
+        expectSpinner
+      );
     }
   );
 
@@ -243,25 +273,20 @@ describe('ListSessions Component', () => {
       .spyOn(SessionService, 'deleteSessionAPI')
       .mockResolvedValue(undefined);
 
-    jest
-      .spyOn(SessionService, 'listSessionsAPIService')
-      .mockImplementation(async (renderActions, setIsLoading, setList) => {
-        setList([
-          buildSessionRow(
-            renderActions,
-            'sess-active',
-            STATUS_ACTIVE,
-            ClusterStatus.STATUS_ACTIVE
-          ),
-          buildSessionRow(
-            renderActions,
-            'sess-stopped',
-            STATUS_TERMINATED,
-            ClusterStatus.STATUS_STOPPED
-          )
-        ]);
-        setIsLoading(false);
-      });
+    mockListSessions(renderActions => [
+      buildSessionRow(
+        renderActions,
+        'sess-active',
+        STATUS_ACTIVE,
+        ClusterStatus.STATUS_ACTIVE
+      ),
+      buildSessionRow(
+        renderActions,
+        'sess-stopped',
+        STATUS_TERMINATED,
+        ClusterStatus.STATUS_STOPPED
+      )
+    ]);
 
     await renderComponent();
 
@@ -282,7 +307,6 @@ describe('ListSessions Component', () => {
     });
     expect(terminateSpy).toHaveBeenCalledWith('sess-active');
 
-    // Open DeletePopup and cancel first
     const deleteButtons = container.querySelectorAll(
       '[title="Delete Session"]'
     );
@@ -301,7 +325,6 @@ describe('ListSessions Component', () => {
     });
     expect(deleteSpy).not.toHaveBeenCalled();
 
-    // Re-open DeletePopup and confirm deletion
     await act(async () => {
       (deleteButtons[0] as HTMLElement).click();
     });
@@ -314,20 +337,15 @@ describe('ListSessions Component', () => {
     expect(deleteSpy).toHaveBeenCalledWith('sess-active');
   });
 
-  it('opens SessionDetails when a Session ID is clicked and returns to the table on back', async () => {
-    const listSpy = jest
-      .spyOn(SessionService, 'listSessionsAPIService')
-      .mockImplementation(async (renderActions, setIsLoading, setList) => {
-        setList([
-          buildSessionRow(
-            renderActions,
-            'sess-detail-01',
-            STATUS_ACTIVE,
-            ClusterStatus.STATUS_ACTIVE
-          )
-        ]);
-        setIsLoading(false);
-      });
+  it('opens SessionDetails when a Session ID is clicked and refreshes table on back', async () => {
+    const listSpy = mockListSessions(renderActions => [
+      buildSessionRow(
+        renderActions,
+        'sess-detail-01',
+        STATUS_ACTIVE,
+        ClusterStatus.STATUS_ACTIVE
+      )
+    ]);
 
     await renderComponent();
 
@@ -343,11 +361,16 @@ describe('ListSessions Component', () => {
     expect(
       container.querySelector('[data-testid="mock-session-details"]')
     ).not.toBeNull();
-    expect(container.textContent).toContain('Details for sess-detail-01');
+    expect(mockSessionDetailsProps).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sessionSelected: 'sess-detail-01',
+        detailedSessionView: true
+      })
+    );
 
     const backBtn = container.querySelector(
       '[data-testid="back-to-sessions-btn"]'
-    ) as HTMLElement;
+    ) as HTMLButtonElement;
     await act(async () => {
       backBtn.click();
     });
@@ -358,29 +381,55 @@ describe('ListSessions Component', () => {
     expect(listSpy).toHaveBeenCalledTimes(3);
   });
 
-  it('renders PaginationView when more than 50 sessions are loaded and disables polling when global filter disables it', async () => {
-    const listSpy = jest
-      .spyOn(SessionService, 'listSessionsAPIService')
-      .mockImplementation(
-        async (
-          renderActions,
-          setIsLoading,
-          setList,
-          _setApiDialogOpen,
-          setPollingDisable
-        ) => {
-          const manyRows = Array.from({ length: 52 }, (_, idx) =>
-            buildSessionRow(renderActions, `sess-${idx}`, STATUS_ACTIVE)
-          );
-          setList(manyRows);
-          setIsLoading(false);
-          setPollingDisable(true);
-        }
-      );
+  it('filters rows via GlobalFilter input (toggling pollingDisable) and navigates PaginationView when > 50 rows exist', async () => {
+    const listSpy = mockListSessions(renderActions =>
+      Array.from({ length: 52 }, (_, idx) =>
+        buildSessionRow(renderActions, `sess-${idx}`, STATUS_ACTIVE)
+      )
+    );
 
     await renderComponent();
 
+    expect(container.querySelector('.page-display-part')?.textContent).toBe(
+      '1 - 50 of 52'
+    );
+
+    // Navigate to page 2 via Next button, then back to page 1 via Previous button
+    const moveButtons = container.querySelectorAll('.page-move-button');
+    expect(moveButtons.length).toBe(2);
+    await act(async () => {
+      (moveButtons[1] as HTMLElement).click();
+    });
+    expect(container.querySelector('.page-display-part')?.textContent).toBe(
+      '51 - 52 of 52'
+    );
+    await act(async () => {
+      (moveButtons[0] as HTMLElement).click();
+    });
+    expect(container.querySelector('.page-display-part')?.textContent).toBe(
+      '1 - 50 of 52'
+    );
+
+    // Type into GlobalFilter to filter down to sess-51 and disable polling
+    const filterInput = container.querySelector(
+      'input[aria-label="filterd value"]'
+    ) as HTMLInputElement;
+    expect(filterInput).not.toBeNull();
+
+    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+      window.HTMLInputElement.prototype,
+      'value'
+    )?.set;
+
+    await act(async () => {
+      nativeInputValueSetter?.call(filterInput, 'sess-51');
+      filterInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+
+    const visibleNameCells = container.querySelectorAll('td.cluster-name');
+    expect(visibleNameCells.length).toBe(1);
+    expect(visibleNameCells[0].textContent).toBe('sess-51');
+    // Setting non-empty filter sets pollingDisable=true, so listSessionsAPI is NOT re-called
     expect(listSpy).toHaveBeenCalledTimes(1);
-    expect(container.textContent).toContain('1 - 50 of 52');
   });
 });

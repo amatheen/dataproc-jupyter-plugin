@@ -17,37 +17,33 @@
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
+const mockSessionDetailsProps = jest.fn();
+
 jest.mock('./sessionDetails', () => ({
   __esModule: true,
-  default: ({
-    sessionSelected,
-    setDetailedSessionView,
-    detailedSessionView,
-    fromPage,
-    app
-  }: any) => (
-    <div data-testid="mock-session-details">
-      <span data-testid="session-id">{sessionSelected}</span>
-      <span data-testid="from-page">{fromPage}</span>
-      <span data-testid="detailed-flag">{String(detailedSessionView)}</span>
-      <span data-testid="has-app">{String(Boolean(app))}</span>
-      <button
-        data-testid="close-session-details-btn"
-        onClick={() => setDetailedSessionView(false)}
-      >
-        Close
-      </button>
-    </div>
-  )
+  default: (props: any) => {
+    mockSessionDetailsProps(props);
+    return (
+      <div data-testid="mock-session-details">
+        <button
+          data-testid="close-session-details-btn"
+          onClick={() => props.setDetailedSessionView(false)}
+        >
+          Close
+        </button>
+      </div>
+    );
+  }
 }));
 
 import React, { act } from 'react';
 import { createRoot, Root } from 'react-dom/client';
+import { DataprocWidget } from '../controls/DataprocWidget';
 import { SessionTemplate } from './sessionTemplate';
 
 describe('SessionTemplate Widget', () => {
   let container: HTMLDivElement;
-  let root: Root;
+  let root: Root | null = null;
 
   const mockApp: any = { shell: { activeWidget: { close: jest.fn() } } };
   const mockLauncher: any = { add: jest.fn() };
@@ -68,10 +64,14 @@ describe('SessionTemplate Widget', () => {
   });
 
   afterEach(() => {
-    act(() => {
-      root.unmount();
-    });
+    if (root) {
+      act(() => {
+        root?.unmount();
+      });
+      root = null;
+    }
     container.remove();
+    jest.restoreAllMocks();
   });
 
   const renderWidget = async (sessionId = 'session-template-01') => {
@@ -82,12 +82,12 @@ describe('SessionTemplate Widget', () => {
       sessionId
     );
     await act(async () => {
-      root.render(widget.renderInternal());
+      root?.render(widget.renderInternal());
     });
     return widget;
   };
 
-  it('stores constructor arguments on the SessionTemplate widget instance', () => {
+  it('extends DataprocWidget and stores constructor arguments on the instance', () => {
     const widget = new SessionTemplate(
       mockApp,
       mockLauncher,
@@ -95,39 +95,41 @@ describe('SessionTemplate Widget', () => {
       'sess-abc'
     );
 
+    expect(widget).toBeInstanceOf(DataprocWidget);
     expect(widget.app).toBe(mockApp);
     expect(widget.launcher).toBe(mockLauncher);
     expect(widget.sessionId).toBe('sess-abc');
   });
 
-  it('renders SessionDetails inside session-template-container with Launcher props by default', async () => {
-    await renderWidget('sess-xyz');
+  test.each(['sess-xyz', ''])(
+    'renders SessionDetails inside session-template-container with Launcher props for sessionId="%s"',
+    async sessionId => {
+      await renderWidget(sessionId);
 
-    const wrapper = container.querySelector('.session-template-container');
-    expect(wrapper).not.toBeNull();
-    expect(
-      container.querySelector('[data-testid="mock-session-details"]')
-    ).not.toBeNull();
-    expect(
-      container.querySelector('[data-testid="session-id"]')?.textContent
-    ).toBe('sess-xyz');
-    expect(
-      container.querySelector('[data-testid="from-page"]')?.textContent
-    ).toBe('Launcher');
-    expect(
-      container.querySelector('[data-testid="detailed-flag"]')?.textContent
-    ).toBe('true');
-    expect(
-      container.querySelector('[data-testid="has-app"]')?.textContent
-    ).toBe('true');
-  });
+      expect(
+        container.querySelector('.session-template-container')
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="mock-session-details"]')
+      ).not.toBeNull();
+      expect(mockSessionDetailsProps).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          sessionSelected: sessionId,
+          detailedSessionView: true,
+          fromPage: 'Launcher',
+          app: mockApp,
+          setDetailedSessionView: expect.any(Function)
+        })
+      );
+    }
+  );
 
-  it('unmounts SessionDetails when setDetailedSessionView(false) is invoked', async () => {
+  it('unmounts SessionDetails while preserving container when setDetailedSessionView(false) is invoked', async () => {
     await renderWidget('sess-close-test');
 
     const closeBtn = container.querySelector(
       '[data-testid="close-session-details-btn"]'
-    ) as HTMLElement;
+    ) as HTMLButtonElement;
     expect(closeBtn).not.toBeNull();
 
     await act(async () => {

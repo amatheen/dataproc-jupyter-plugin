@@ -78,6 +78,14 @@ const flushPromises = async () => {
   }
 };
 
+const mockJsonResponse = (payload: unknown) => ({
+  json: jest.fn().mockResolvedValue(payload)
+});
+
+const mockNestedTerminateResponse = (payload: unknown) => ({
+  json: jest.fn().mockResolvedValue(mockJsonResponse(payload))
+});
+
 describe('SessionService', () => {
   const mockCredentials = {
     project_id: 'test-project',
@@ -96,50 +104,55 @@ describe('SessionService', () => {
   });
 
   afterEach(() => {
-    consoleLogSpy.mockRestore();
+    jest.restoreAllMocks();
   });
 
   describe('deleteSessionAPI', () => {
-    it('does not call loggedFetch when credentials are unavailable', async () => {
+    it('skips loggedFetch when credentials are unavailable', async () => {
       (authApi as jest.Mock).mockResolvedValue(undefined);
 
       await SessionService.deleteSessionAPI('session-1');
       await flushPromises();
 
       expect(loggedFetch).not.toHaveBeenCalled();
+      expect(Notification.emit).not.toHaveBeenCalled();
     });
 
-    it('sends DELETE request and emits success notification when deletion succeeds', async () => {
-      (loggedFetch as jest.Mock).mockResolvedValue({
-        json: jest.fn().mockResolvedValue({})
-      });
+    test.each([
+      ['empty object payload', {}],
+      ['null JSON payload', null]
+    ])(
+      'sends DELETE request and emits success notification for %s',
+      async (_label, payload) => {
+        (loggedFetch as jest.Mock).mockResolvedValue(mockJsonResponse(payload));
 
-      await SessionService.deleteSessionAPI('session-1');
-      await flushPromises();
+        await SessionService.deleteSessionAPI('session-1');
+        await flushPromises();
 
-      expect(loggedFetch).toHaveBeenCalledWith(
-        'https://dataproc.googleapis.com/v1/projects/test-project/locations/us-central1/sessions/session-1',
-        {
-          method: 'DELETE',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer mock-token'
+        expect(loggedFetch).toHaveBeenCalledWith(
+          'https://dataproc.googleapis.com/v1/projects/test-project/locations/us-central1/sessions/session-1',
+          {
+            method: 'DELETE',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: 'Bearer mock-token'
+            }
           }
-        }
-      );
-      expect(Notification.emit).toHaveBeenCalledWith(
-        'Session session-1 deleted successfully',
-        'success',
-        { autoClose: 5000 }
-      );
-    });
+        );
+        expect(Notification.emit).toHaveBeenCalledWith(
+          'Session session-1 deleted successfully',
+          'success',
+          { autoClose: 5000 }
+        );
+      }
+    );
 
     it('emits error notification when DELETE response contains an API error code', async () => {
-      (loggedFetch as jest.Mock).mockResolvedValue({
-        json: jest.fn().mockResolvedValue({
+      (loggedFetch as jest.Mock).mockResolvedValue(
+        mockJsonResponse({
           error: { code: 403, message: 'Permission denied' }
         })
-      });
+      );
 
       await SessionService.deleteSessionAPI('session-1');
       await flushPromises();
@@ -170,7 +183,7 @@ describe('SessionService', () => {
   });
 
   describe('terminateSessionAPI', () => {
-    it('does not call loggedFetch when credentials are unavailable', async () => {
+    it('skips loggedFetch when credentials are unavailable', async () => {
       (authApi as jest.Mock).mockResolvedValue(undefined);
 
       await SessionService.terminateSessionAPI('session-2');
@@ -179,37 +192,39 @@ describe('SessionService', () => {
       expect(loggedFetch).not.toHaveBeenCalled();
     });
 
-    it('sends POST :terminate request without emitting error when response succeeds', async () => {
-      (loggedFetch as jest.Mock).mockResolvedValue({
-        json: jest.fn().mockResolvedValue({
-          json: jest.fn().mockResolvedValue({})
-        })
-      });
+    test.each([
+      ['empty object payload', {}],
+      ['null JSON payload', null]
+    ])(
+      'sends POST :terminate request without emitting error for %s',
+      async (_label, payload) => {
+        (loggedFetch as jest.Mock).mockResolvedValue(
+          mockNestedTerminateResponse(payload)
+        );
 
-      await SessionService.terminateSessionAPI('session-2');
-      await flushPromises();
+        await SessionService.terminateSessionAPI('session-2');
+        await flushPromises();
 
-      expect(loggedFetch).toHaveBeenCalledWith(
-        'https://dataproc.googleapis.com/v1/projects/test-project/locations/us-central1/sessions/session-2:terminate',
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: 'Bearer mock-token'
+        expect(loggedFetch).toHaveBeenCalledWith(
+          'https://dataproc.googleapis.com/v1/projects/test-project/locations/us-central1/sessions/session-2:terminate',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: 'Bearer mock-token'
+            }
           }
-        }
-      );
-      expect(Notification.emit).not.toHaveBeenCalled();
-    });
+        );
+        expect(Notification.emit).not.toHaveBeenCalled();
+      }
+    );
 
     it('emits error notification when formatted terminate response includes error.code', async () => {
-      (loggedFetch as jest.Mock).mockResolvedValue({
-        json: jest.fn().mockResolvedValue({
-          json: jest.fn().mockResolvedValue({
-            error: { code: 400, message: 'Invalid session state' }
-          })
+      (loggedFetch as jest.Mock).mockResolvedValue(
+        mockNestedTerminateResponse({
+          error: { code: 400, message: 'Invalid session state' }
         })
-      });
+      );
 
       await SessionService.terminateSessionAPI('session-2');
       await flushPromises();
@@ -221,16 +236,26 @@ describe('SessionService', () => {
       );
     });
 
-    it('catches inner response.json() rejection and logs to console', async () => {
-      const parseErr = new Error('Malformed JSON');
-      (loggedFetch as jest.Mock).mockResolvedValue({
-        json: jest.fn().mockRejectedValue(parseErr)
-      });
+    test.each([
+      [
+        'outer response.json() rejection',
+        () => ({ json: jest.fn().mockRejectedValue(new Error('Outer parse')) })
+      ],
+      [
+        'inner responseResult.json() rejection',
+        () => ({
+          json: jest.fn().mockResolvedValue({
+            json: jest.fn().mockRejectedValue(new Error('Inner parse'))
+          })
+        })
+      ]
+    ])('catches %s and logs error to console', async (_label, buildMock) => {
+      (loggedFetch as jest.Mock).mockResolvedValue(buildMock());
 
       await SessionService.terminateSessionAPI('session-2');
       await flushPromises();
 
-      expect(consoleLogSpy).toHaveBeenCalledWith(parseErr);
+      expect(consoleLogSpy).toHaveBeenCalledWith(expect.any(Error));
       expect(Notification.emit).not.toHaveBeenCalled();
     });
 
@@ -253,27 +278,30 @@ describe('SessionService', () => {
   });
 
   describe('getSessionDetailsService', () => {
-    const mockSetErrorView = jest.fn();
-    const mockSetIsLoading = jest.fn();
-    const mockSetLabelDetail = jest.fn();
-    const mockSetSessionInfo = jest.fn();
+    const createCallbacks = () => ({
+      setErrorView: jest.fn(),
+      setIsLoading: jest.fn(),
+      setLabelDetail: jest.fn(),
+      setSessionInfo: jest.fn()
+    });
 
     it('populates session info and formatted labels on successful response', async () => {
+      const cb = createCallbacks();
       const payload = {
         name: 'projects/test-project/locations/us-central1/sessions/sess-1',
         state: STATUS_ACTIVE,
         labels: { env: 'prod', team: 'analytics' }
       };
-      (authenticatedFetch as jest.Mock).mockResolvedValue({
-        json: jest.fn().mockResolvedValue(payload)
-      });
+      (authenticatedFetch as jest.Mock).mockResolvedValue(
+        mockJsonResponse(payload)
+      );
 
       await SessionService.getSessionDetailsService(
         'sess-1',
-        mockSetErrorView,
-        mockSetIsLoading,
-        mockSetLabelDetail,
-        mockSetSessionInfo
+        cb.setErrorView,
+        cb.setIsLoading,
+        cb.setLabelDetail,
+        cb.setSessionInfo
       );
 
       expect(authenticatedFetch).toHaveBeenCalledWith({
@@ -281,85 +309,71 @@ describe('SessionService', () => {
         method: HTTP_METHOD.GET,
         regionIdentifier: 'locations'
       });
-      expect(mockSetErrorView).not.toHaveBeenCalled();
-      expect(mockSetSessionInfo).toHaveBeenCalledWith(payload);
-      expect(mockSetLabelDetail).toHaveBeenCalledWith([
+      expect(cb.setErrorView).not.toHaveBeenCalled();
+      expect(cb.setSessionInfo).toHaveBeenCalledWith(payload);
+      expect(cb.setLabelDetail).toHaveBeenCalledWith([
         'env:prod',
         'team:analytics'
       ]);
-      expect(mockSetIsLoading).toHaveBeenCalledWith(false);
+      expect(cb.setIsLoading).toHaveBeenCalledWith(false);
       expect(Notification.emit).not.toHaveBeenCalled();
     });
 
-    it('sets errorView on 404 error, handles missing labels, and emits error notification', async () => {
-      const notFoundPayload = {
-        error: { code: 404, message: 'Session not found' }
-      };
-      (authenticatedFetch as jest.Mock).mockResolvedValue({
-        json: jest.fn().mockResolvedValue(notFoundPayload)
-      });
+    test.each([
+      [404, 'Session not found', true],
+      [500, 'Internal error', false]
+    ])(
+      'handles API error code %i (expectErrorView=%s) with empty labels fallback',
+      async (code, message, expectErrorView) => {
+        const cb = createCallbacks();
+        (authenticatedFetch as jest.Mock).mockResolvedValue(
+          mockJsonResponse({ error: { code, message } })
+        );
 
-      await SessionService.getSessionDetailsService(
-        'sess-missing',
-        mockSetErrorView,
-        mockSetIsLoading,
-        mockSetLabelDetail,
-        mockSetSessionInfo
-      );
+        await SessionService.getSessionDetailsService(
+          'sess-err-code',
+          cb.setErrorView,
+          cb.setIsLoading,
+          cb.setLabelDetail,
+          cb.setSessionInfo
+        );
 
-      expect(mockSetErrorView).toHaveBeenCalledWith(true);
-      expect(mockSetLabelDetail).toHaveBeenCalledWith([]);
-      expect(mockSetIsLoading).toHaveBeenCalledWith(false);
-      expect(Notification.emit).toHaveBeenCalledWith(
-        'Failed to fetch session details sess-missing : Session not found',
-        'error',
-        { autoClose: 5000 }
-      );
-    });
-
-    it('emits error notification without setting errorView for non-404 API errors', async () => {
-      (authenticatedFetch as jest.Mock).mockResolvedValue({
-        json: jest.fn().mockResolvedValue({
-          error: { code: 500, message: 'Internal error' }
-        })
-      });
-
-      await SessionService.getSessionDetailsService(
-        'sess-500',
-        mockSetErrorView,
-        mockSetIsLoading,
-        mockSetLabelDetail,
-        mockSetSessionInfo
-      );
-
-      expect(mockSetErrorView).not.toHaveBeenCalled();
-      expect(Notification.emit).toHaveBeenCalledWith(
-        'Failed to fetch session details sess-500 : Internal error',
-        'error',
-        { autoClose: 5000 }
-      );
-    });
+        if (expectErrorView) {
+          expect(cb.setErrorView).toHaveBeenCalledWith(true);
+        } else {
+          expect(cb.setErrorView).not.toHaveBeenCalled();
+        }
+        expect(cb.setLabelDetail).toHaveBeenCalledWith([]);
+        expect(cb.setIsLoading).toHaveBeenCalledWith(false);
+        expect(Notification.emit).toHaveBeenCalledWith(
+          `Failed to fetch session details sess-err-code : ${message}`,
+          'error',
+          { autoClose: 5000 }
+        );
+      }
+    );
 
     it('handles authenticatedFetch exceptions by stopping loader, logging, and notifying', async () => {
+      const cb = createCallbacks();
       (authenticatedFetch as jest.Mock).mockRejectedValue(
         new Error('Connection refused')
       );
 
       await SessionService.getSessionDetailsService(
-        'sess-err',
-        mockSetErrorView,
-        mockSetIsLoading,
-        mockSetLabelDetail,
-        mockSetSessionInfo
+        'sess-net-err',
+        cb.setErrorView,
+        cb.setIsLoading,
+        cb.setLabelDetail,
+        cb.setSessionInfo
       );
 
-      expect(mockSetIsLoading).toHaveBeenCalledWith(false);
+      expect(cb.setIsLoading).toHaveBeenCalledWith(false);
       expect(DataprocLoggingService.log).toHaveBeenCalledWith(
         'Error loading session details',
         LOG_LEVEL.ERROR
       );
       expect(Notification.emit).toHaveBeenCalledWith(
-        'Failed to fetch session details sess-err : Error: Connection refused',
+        'Failed to fetch session details sess-net-err : Error: Connection refused',
         'error',
         { autoClose: 5000 }
       );
@@ -367,16 +381,19 @@ describe('SessionService', () => {
   });
 
   describe('listSessionsAPIService', () => {
-    const mockRenderActions = jest
-      .fn()
-      .mockReturnValue(React.createElement('div', null, 'actions'));
-    const mockSetIsLoading = jest.fn();
-    const mockSetSessionsList = jest.fn();
-    const mockSetApiDialogOpen = jest.fn();
-    const mockSetPollingDisable = jest.fn();
-    const mockSetEnableLink = jest.fn();
+    const createListCallbacks = () => ({
+      renderActions: jest
+        .fn()
+        .mockReturnValue(React.createElement('div', null, 'actions')),
+      setIsLoading: jest.fn(),
+      setSessionsList: jest.fn(),
+      setApiDialogOpen: jest.fn(),
+      setPollingDisable: jest.fn(),
+      setEnableLink: jest.fn()
+    });
 
-    it('paginates across nextPageToken, sorts descending by createTime, and transforms rows', async () => {
+    it('paginates across nextPageToken, sorts descending by createTime, and maps engines & elapsedTime', async () => {
+      const cb = createListCallbacks();
       const page1 = {
         sessions: [
           {
@@ -408,22 +425,27 @@ describe('SessionService', () => {
             state: STATUS_FAIL,
             createTime: '2026-01-01T15:00:00Z',
             stateTime: '2026-01-01T15:05:10Z',
-            creator: 'carol@example.com'
+            creator: 'carol@example.com',
+            runtimeConfig: {
+              properties: {
+                'spark:spark.dataproc.engine': 'unmappedEngine'
+              }
+            }
           }
         ]
       };
 
       (authenticatedFetch as jest.Mock)
-        .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue(page1) })
-        .mockResolvedValueOnce({ json: jest.fn().mockResolvedValue(page2) });
+        .mockResolvedValueOnce(mockJsonResponse(page1))
+        .mockResolvedValueOnce(mockJsonResponse(page2));
 
       await SessionService.listSessionsAPIService(
-        mockRenderActions,
-        mockSetIsLoading,
-        mockSetSessionsList,
-        mockSetApiDialogOpen,
-        mockSetPollingDisable,
-        mockSetEnableLink,
+        cb.renderActions,
+        cb.setIsLoading,
+        cb.setSessionsList,
+        cb.setApiDialogOpen,
+        cb.setPollingDisable,
+        cb.setEnableLink,
         mockCredentials
       );
       await flushPromises();
@@ -446,7 +468,7 @@ describe('SessionService', () => {
       });
 
       expect(elapsedTime).toHaveBeenCalledTimes(2);
-      expect(mockSetSessionsList).toHaveBeenCalledWith([
+      expect(cb.setSessionsList).toHaveBeenCalledWith([
         expect.objectContaining({
           sessionID: 'sess-newer',
           status: STATUS_ACTIVE,
@@ -460,7 +482,7 @@ describe('SessionService', () => {
           sessionID: 'sess-mid-failed',
           status: STATUS_FAIL,
           location: 'us-west1',
-          engine: 'Default',
+          engine: undefined,
           elapsedTime: '5m 10s'
         }),
         expect.objectContaining({
@@ -471,54 +493,83 @@ describe('SessionService', () => {
           elapsedTime: '5m 10s'
         })
       ]);
-      expect(mockSetIsLoading).toHaveBeenCalledWith(false);
+      expect(cb.setIsLoading).toHaveBeenCalledWith(false);
     });
 
-    it('sets empty list and delegates to handleApiError when response contains an API error', async () => {
+    test.each([
+      ['empty object without sessions', {}],
+      ['null JSON response', null]
+    ])(
+      'sets empty session list without calling handleApiError for %s',
+      async (_label, payload) => {
+        const cb = createListCallbacks();
+        (authenticatedFetch as jest.Mock).mockResolvedValue(
+          mockJsonResponse(payload)
+        );
+
+        await SessionService.listSessionsAPIService(
+          cb.renderActions,
+          cb.setIsLoading,
+          cb.setSessionsList,
+          cb.setApiDialogOpen,
+          cb.setPollingDisable,
+          cb.setEnableLink,
+          mockCredentials
+        );
+
+        expect(cb.setSessionsList).toHaveBeenCalledWith([]);
+        expect(cb.setIsLoading).toHaveBeenCalledWith(false);
+        expect(handleApiError).not.toHaveBeenCalled();
+      }
+    );
+
+    it('sets empty list and delegates to handleApiError when response contains error.code', async () => {
+      const cb = createListCallbacks();
       const errorResponse = {
         error: { code: 403, message: 'Dataproc API has not been used' }
       };
-      (authenticatedFetch as jest.Mock).mockResolvedValue({
-        json: jest.fn().mockResolvedValue(errorResponse)
-      });
+      (authenticatedFetch as jest.Mock).mockResolvedValue(
+        mockJsonResponse(errorResponse)
+      );
 
       await SessionService.listSessionsAPIService(
-        mockRenderActions,
-        mockSetIsLoading,
-        mockSetSessionsList,
-        mockSetApiDialogOpen,
-        mockSetPollingDisable,
-        mockSetEnableLink,
+        cb.renderActions,
+        cb.setIsLoading,
+        cb.setSessionsList,
+        cb.setApiDialogOpen,
+        cb.setPollingDisable,
+        cb.setEnableLink,
         mockCredentials
       );
 
-      expect(mockSetSessionsList).toHaveBeenCalledWith([]);
-      expect(mockSetIsLoading).toHaveBeenCalledWith(false);
+      expect(cb.setSessionsList).toHaveBeenCalledWith([]);
+      expect(cb.setIsLoading).toHaveBeenCalledWith(false);
       expect(handleApiError).toHaveBeenCalledWith(
         errorResponse,
         mockCredentials,
-        mockSetApiDialogOpen,
-        mockSetEnableLink,
-        mockSetPollingDisable,
+        cb.setApiDialogOpen,
+        cb.setEnableLink,
+        cb.setPollingDisable,
         'sessions'
       );
     });
 
     it('logs error and emits notification when authenticatedFetch throws', async () => {
+      const cb = createListCallbacks();
       (authenticatedFetch as jest.Mock).mockRejectedValue(
         new Error('Fetch failed')
       );
 
       await SessionService.listSessionsAPIService(
-        mockRenderActions,
-        mockSetIsLoading,
-        mockSetSessionsList,
-        mockSetApiDialogOpen,
-        mockSetPollingDisable,
-        mockSetEnableLink
+        cb.renderActions,
+        cb.setIsLoading,
+        cb.setSessionsList,
+        cb.setApiDialogOpen,
+        cb.setPollingDisable,
+        cb.setEnableLink
       );
 
-      expect(mockSetIsLoading).toHaveBeenCalledWith(false);
+      expect(cb.setIsLoading).toHaveBeenCalledWith(false);
       expect(DataprocLoggingService.log).toHaveBeenCalledWith(
         'Error listing Sessions',
         LOG_LEVEL.ERROR

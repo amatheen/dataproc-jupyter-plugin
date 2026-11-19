@@ -61,7 +61,7 @@ import {
 
 describe('SessionDetails Component', () => {
   let container: HTMLDivElement;
-  let root: Root;
+  let root: Root | null = null;
   const mockSetDetailedSessionView = jest.fn();
 
   const createMockSessionInfo = (overrides: Record<string, any> = {}) => ({
@@ -108,17 +108,47 @@ describe('SessionDetails Component', () => {
   });
 
   afterEach(() => {
-    act(() => {
-      root.unmount();
-    });
+    if (root) {
+      act(() => {
+        root?.unmount();
+      });
+      root = null;
+    }
     container.remove();
+    jest.restoreAllMocks();
   });
+
+  const mockSessionDetailsResponse = (
+    sessionOverrides?: Record<string, any> | null,
+    labels: string[] = [],
+    errorView = false
+  ) =>
+    jest
+      .spyOn(SessionService, 'getSessionDetailsService')
+      .mockImplementation(
+        async (
+          _selected,
+          setErrorView,
+          setIsLoading,
+          setLabelDetail,
+          setSessionInfo
+        ) => {
+          if (errorView) {
+            setErrorView(true);
+          }
+          if (sessionOverrides !== null) {
+            setSessionInfo(createMockSessionInfo(sessionOverrides));
+            setLabelDetail(labels);
+          }
+          setIsLoading(false);
+        }
+      );
 
   const renderDetails = async (
     props: Partial<React.ComponentProps<typeof SessionDetails>> = {}
   ) => {
     await act(async () => {
-      root.render(
+      root?.render(
         <SessionDetails
           sessionSelected="sess-alpha"
           setDetailedSessionView={mockSetDetailedSessionView}
@@ -129,7 +159,7 @@ describe('SessionDetails Component', () => {
     });
   };
 
-  it('displays Loading Session Details spinner while fetching and hides when loading finishes empty', async () => {
+  it('displays Loading Session Details spinner while pending and cleans up polling on unmount', async () => {
     jest
       .spyOn(SessionService, 'getSessionDetailsService')
       .mockImplementation(async () => undefined);
@@ -138,83 +168,107 @@ describe('SessionDetails Component', () => {
 
     expect(container.querySelector('[data-testid="loader"]')).not.toBeNull();
     expect(container.textContent).toContain('Loading Session Details');
+
+    act(() => {
+      root?.unmount();
+      root = null;
+    });
+
+    expect(PollingTimer).toHaveBeenLastCalledWith(
+      expect.any(Function),
+      true,
+      undefined
+    );
   });
 
-  it('renders error view on 404 and handles back navigation for both list view and Launcher', async () => {
-    jest
-      .spyOn(SessionService, 'getSessionDetailsService')
-      .mockImplementation(async (_selected, setErrorView, setIsLoading) => {
-        setErrorView(true);
-        setIsLoading(false);
-      });
+  it('renders empty container without loader when fetch finishes with empty session name and no error', async () => {
+    mockSessionDetailsResponse({ name: '' });
 
     await renderDetails();
 
-    expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      'Unable to find the resource you requested'
-    );
-
-    const backArrow = container.querySelector(
-      '[aria-label="back-arrow-icon"]'
-    ) as HTMLElement;
-    await act(async () => {
-      backArrow.click();
-    });
-    expect(mockSetDetailedSessionView).toHaveBeenCalledWith(false);
-    expect(PollingTimer).toHaveBeenCalled();
-
-    // Verify Launcher close behavior
-    const mockClose = jest.fn();
-    const mockApp: any = { shell: { activeWidget: { close: mockClose } } };
-    await renderDetails({ fromPage: 'Launcher', app: mockApp });
-
-    const launcherBackArrow = container.querySelector(
-      '[aria-label="back-arrow-icon"]'
-    ) as HTMLElement;
-    await act(async () => {
-      launcherBackArrow.click();
-    });
-    expect(mockClose).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[data-testid="loader"]')).toBeNull();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('.cluster-details-title')).toBeNull();
   });
 
-  it('renders full session metadata, Lightning Engine, executionConfig, KMS key, peripheralsConfig, and labels', async () => {
-    const richSession = createMockSessionInfo({
-      environmentConfig: {
-        executionConfig: {
-          serviceAccount: 'sa@test-project.iam.gserviceaccount.com',
-          networkUri: 'vpc-main',
-          subnetworkUri: 'subnet-us-central1',
-          networkTags: ['spark-node', 'internal'],
-          kmsKey:
-            'projects/test-project/locations/us-central1/keyRings/kr/cryptoKeys/key1'
-        },
-        peripheralsConfig: {
-          metastoreService:
-            'projects/test-project/locations/us-central1/services/dpms-1',
-          sparkHistoryServerConfig: {
-            dataprocCluster:
-              'projects/test-project/regions/us-central1/clusters/shs-cluster'
-          },
-          extraField: 'ignored'
-        }
-      }
-    });
+  test.each([
+    ['list view (no fromPage)', undefined, undefined, true, false],
+    [
+      'Launcher with activeWidget.close',
+      'Launcher',
+      () => ({ shell: { activeWidget: { close: jest.fn() } } }),
+      false,
+      true
+    ],
+    ['Launcher without app prop', 'Launcher', () => undefined, false, false],
+    [
+      'Launcher with null activeWidget',
+      'Launcher',
+      () => ({ shell: { activeWidget: null } }),
+      false,
+      false
+    ]
+  ])(
+    'renders 404 error view and handles back-arrow click in %s',
+    async (
+      _scenario,
+      fromPage,
+      buildApp,
+      expectExitDetailView,
+      expectWidgetClosed
+    ) => {
+      mockSessionDetailsResponse(null, [], true);
+      const mockApp: any = buildApp ? buildApp() : undefined;
 
-    jest
-      .spyOn(SessionService, 'getSessionDetailsService')
-      .mockImplementation(
-        async (
-          _selected,
-          _setErrorView,
-          setIsLoading,
-          setLabelDetail,
-          setSessionInfo
-        ) => {
-          setSessionInfo(richSession);
-          setLabelDetail(['env:prod', 'owner:dataproc']);
-          setIsLoading(false);
-        }
+      await renderDetails({ fromPage, app: mockApp });
+
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(
+        'Unable to find the resource you requested'
       );
+
+      const backArrow = container.querySelector(
+        '[aria-label="back-arrow-icon"]'
+      ) as HTMLElement;
+      await act(async () => {
+        backArrow.click();
+      });
+
+      if (expectExitDetailView) {
+        expect(mockSetDetailedSessionView).toHaveBeenCalledWith(false);
+      } else {
+        expect(mockSetDetailedSessionView).not.toHaveBeenCalled();
+      }
+      if (expectWidgetClosed) {
+        expect(mockApp.shell.activeWidget.close).toHaveBeenCalledTimes(1);
+      }
+    }
+  );
+
+  it('renders full metadata, Lightning Engine, executionConfig, customer KMS key, peripheralsConfig, and labels', async () => {
+    mockSessionDetailsResponse(
+      {
+        environmentConfig: {
+          executionConfig: {
+            serviceAccount: 'sa@test-project.iam.gserviceaccount.com',
+            networkUri: 'vpc-main',
+            subnetworkUri: 'subnet-us-central1',
+            networkTags: ['spark-node', 'internal'],
+            kmsKey:
+              'projects/test-project/locations/us-central1/keyRings/kr/cryptoKeys/key1'
+          },
+          peripheralsConfig: {
+            metastoreService:
+              'projects/test-project/locations/us-central1/services/dpms-1',
+            sparkHistoryServerConfig: {
+              dataprocCluster:
+                'projects/test-project/regions/us-central1/clusters/shs-cluster'
+            },
+            extraField: 'ignored'
+          }
+        }
+      },
+      ['env:prod', 'owner:dataproc']
+    );
 
     await renderDetails();
 
@@ -247,7 +301,6 @@ describe('SessionDetails Component', () => {
       container.querySelector('[data-testid="mock-view-logs"]')
     ).not.toBeNull();
 
-    // Click header back arrow in details view
     const headerBackArrow = container.querySelector(
       '.back-arrow-icon'
     ) as HTMLElement;
@@ -257,58 +310,73 @@ describe('SessionDetails Component', () => {
     expect(mockSetDetailedSessionView).toHaveBeenCalledWith(false);
   });
 
-  it('renders Google-managed encryption, "None" labels, Default engine fallback, and empty stateHistory fallback', async () => {
-    const minimalSession = createMockSessionInfo({
-      state: STATUS_TERMINATED,
-      stateHistory: [{ stateStartTime: '' }],
-      runtimeConfig: {
-        properties: {
-          'spark:spark.dataproc.engine': 'unknownEngine'
-        }
-      },
-      environmentConfig: {
-        executionConfig: {
-          serviceAccount: 'sa@test-project.iam.gserviceaccount.com',
-          networkUri: 'default-network',
-          subnetworkUri: 'default-subnet',
-          networkTags: [],
-          kmsKey: ''
+  test.each([
+    [
+      'Spark History Server without metastore and empty second stateHistory timestamp',
+      {
+        state: STATUS_TERMINATED,
+        stateHistory: [
+          { stateStartTime: '2026-01-10T10:00:00Z' },
+          { stateStartTime: '' }
+        ],
+        runtimeConfig: {
+          properties: { 'spark:spark.dataproc.engine': 'unknownEngine' }
         },
-        peripheralsConfig: {
-          metastoreService: '',
-          sparkHistoryServerConfig: {
-            dataprocCluster: 'shs-only-cluster'
+        environmentConfig: {
+          executionConfig: {
+            serviceAccount: 'sa@test.iam.gserviceaccount.com',
+            networkUri: 'net',
+            subnetworkUri: 'subnet',
+            networkTags: [],
+            kmsKey: ''
+          },
+          peripheralsConfig: {
+            metastoreService: '',
+            sparkHistoryServerConfig: { dataprocCluster: 'shs-only-cluster' }
           }
         }
-      }
-    });
-
-    jest
-      .spyOn(SessionService, 'getSessionDetailsService')
-      .mockImplementation(
-        async (
-          _selected,
-          _setErrorView,
-          setIsLoading,
-          setLabelDetail,
-          setSessionInfo
-        ) => {
-          setSessionInfo(minimalSession);
-          setLabelDetail([]);
-          setIsLoading(false);
+      },
+      true
+    ],
+    [
+      'undefined stateHistory and undefined sparkHistoryServerConfig',
+      {
+        state: STATUS_TERMINATED,
+        stateHistory: undefined,
+        runtimeConfig: { properties: {} },
+        environmentConfig: {
+          executionConfig: {
+            serviceAccount: 'sa@test.iam.gserviceaccount.com',
+            subnetworkUri: 'subnet',
+            networkTags: [],
+            kmsKey: ''
+          },
+          peripheralsConfig: {
+            metastoreService: '',
+            sparkHistoryServerConfig: undefined
+          }
         }
+      },
+      false
+    ]
+  ])(
+    'renders fallbacks cleanly for %s',
+    async (_label, overrides, expectShsHeader) => {
+      mockSessionDetailsResponse(overrides, []);
+
+      await renderDetails();
+
+      expect(container.textContent).toContain('Default');
+      expect(container.textContent).toContain('Google-managed');
+      expect(container.textContent).not.toContain('Encryption key');
+      expect(container.textContent).toContain('None');
+      expect(container.textContent?.includes('Spark History Server')).toBe(
+        expectShsHeader
       );
+    }
+  );
 
-    await renderDetails();
-
-    expect(container.textContent).toContain('Default');
-    expect(container.textContent).toContain('Google-managed');
-    expect(container.textContent).not.toContain('Encryption key');
-    expect(container.textContent).toContain('shs-only-cluster');
-    expect(container.textContent).toContain('None');
-  });
-
-  it.each([
+  test.each([
     [STATUS_ACTIVE, 'active', false, false],
     [STATUS_TERMINATED, 'terminated', false, false],
     [STATUS_ERROR, 'error', false, false],
@@ -322,27 +390,11 @@ describe('SessionDetails Component', () => {
   ])(
     'renders status badge for %s as "%s" (spinner=%s, showFailMsg=%s)',
     async (stateVal, expectedText, expectSpinner, expectStateMsg) => {
-      const session = createMockSessionInfo({
+      mockSessionDetailsResponse({
         state: stateVal,
         stateMessage: 'Driver OOM failure',
         runtimeConfig: { properties: {} }
       });
-
-      jest
-        .spyOn(SessionService, 'getSessionDetailsService')
-        .mockImplementation(
-          async (
-            _selected,
-            _setErrorView,
-            setIsLoading,
-            setLabelDetail,
-            setSessionInfo
-          ) => {
-            setSessionInfo(session);
-            setLabelDetail([]);
-            setIsLoading(false);
-          }
-        );
 
       await renderDetails();
 
@@ -358,79 +410,43 @@ describe('SessionDetails Component', () => {
     }
   );
 
-  it('handles TERMINATE button clicks across CREATING, ACTIVE, and TERMINATED states and respects detailedSessionView=false', async () => {
-    const terminateSpy = jest
-      .spyOn(SessionService, 'terminateSessionAPI')
-      .mockResolvedValue(undefined);
+  test.each([
+    [STATUS_CREATING, 'action-cluster-section', true],
+    [STATUS_ACTIVE, 'action-cluster-section', false],
+    [STATUS_TERMINATED, 'action-cluster-section disabled', false]
+  ])(
+    'handles TERMINATE button in %s state (class="%s", callsApi=%s)',
+    async (state, expectedClass, expectApiCall) => {
+      const terminateSpy = jest
+        .spyOn(SessionService, 'terminateSessionAPI')
+        .mockResolvedValue(undefined);
+      mockSessionDetailsResponse({ state });
 
-    const renderWithState = async (
-      state: string,
-      detailedSessionView = true,
-      omitProperties = false
-    ) => {
-      act(() => {
-        root.unmount();
+      await renderDetails();
+
+      const terminateBtn = container.querySelector(
+        '.action-cluster-section'
+      ) as HTMLElement;
+      expect(terminateBtn.className).toBe(expectedClass);
+
+      await act(async () => {
+        terminateBtn.click();
       });
-      root = createRoot(container);
-      jest
-        .spyOn(SessionService, 'getSessionDetailsService')
-        .mockImplementation(
-          async (
-            _selected,
-            _setErrorView,
-            setIsLoading,
-            setLabelDetail,
-            setSessionInfo
-          ) => {
-            setSessionInfo(
-              createMockSessionInfo({
-                state,
-                ...(omitProperties ? { runtimeConfig: {} } : {})
-              })
-            );
-            setLabelDetail([]);
-            setIsLoading(false);
-          }
-        );
-      await renderDetails({ detailedSessionView });
-    };
 
-    // CREATING triggers terminateSessionAPI
-    await renderWithState(STATUS_CREATING);
-    let terminateBtn = container.querySelector(
-      '.action-cluster-section'
-    ) as HTMLElement;
-    expect(terminateBtn.className).toBe('action-cluster-section');
-    await act(async () => {
-      terminateBtn.click();
-    });
-    expect(terminateSpy).toHaveBeenCalledWith('sess-alpha');
+      if (expectApiCall) {
+        expect(terminateSpy).toHaveBeenCalledWith('sess-alpha');
+      } else {
+        expect(terminateSpy).not.toHaveBeenCalled();
+      }
+    }
+  );
 
-    // ACTIVE renders enabled class and short-circuits onClick in current implementation
-    terminateSpy.mockClear();
-    await renderWithState(STATUS_ACTIVE);
-    terminateBtn = container.querySelector(
-      '.action-cluster-section'
-    ) as HTMLElement;
-    expect(terminateBtn.className).toBe('action-cluster-section');
-    await act(async () => {
-      terminateBtn.click();
-    });
-    expect(terminateSpy).not.toHaveBeenCalled();
+  it('hides details body when detailedSessionView is false and tolerates undefined runtimeConfig', async () => {
+    mockSessionDetailsResponse({ runtimeConfig: undefined });
 
-    // TERMINATED renders disabled class and does not invoke terminateSessionAPI
-    await renderWithState(STATUS_TERMINATED);
-    terminateBtn = container.querySelector(
-      '.action-cluster-section'
-    ) as HTMLElement;
-    expect(terminateBtn.className).toBe('action-cluster-section disabled');
-    await act(async () => {
-      terminateBtn.click();
-    });
-    expect(terminateSpy).not.toHaveBeenCalled();
+    await renderDetails({ detailedSessionView: false });
 
-    // detailedSessionView=false hides inner content and safely handles missing runtimeConfig.properties
-    await renderWithState(STATUS_ACTIVE, false, true);
+    expect(container.querySelector('.scroll')).not.toBeNull();
     expect(container.querySelector('.cluster-details-title')).toBeNull();
   });
 });
