@@ -40,24 +40,28 @@ describe('ListNotebookTemplates Component', () => {
   let root: Root;
   let consoleErrorSpy: jest.SpyInstance;
 
-  const mockSave = jest.fn().mockResolvedValue({});
-  const mockUpdate = jest.fn();
-  const mockExecute = jest.fn().mockResolvedValue({});
   const mockThemeManager: any = {};
 
-  const createMockApp = (hasCurrentShellWidget = true): any => ({
-    serviceManager: {
-      contents: {
-        save: mockSave
+  const createMockApp = (hasCurrentShellWidget = true) => {
+    const mockSave = jest.fn().mockResolvedValue({});
+    const mockUpdate = jest.fn();
+    const mockExecute = jest.fn().mockResolvedValue({});
+    const app: any = {
+      serviceManager: {
+        contents: {
+          save: mockSave
+        }
+      },
+      shell: {
+        currentWidget: hasCurrentShellWidget ? { update: mockUpdate } : null
+      },
+      commands: {
+        execute: mockExecute
       }
-    },
-    shell: {
-      currentWidget: hasCurrentShellWidget ? { update: mockUpdate } : null
-    },
-    commands: {
-      execute: mockExecute
-    }
-  });
+    };
+
+    return { app, mockSave, mockUpdate, mockExecute };
+  };
 
   const createMockFactory = (
     widgetPath: string | null = 'workspace/dir'
@@ -74,18 +78,20 @@ describe('ListNotebookTemplates Component', () => {
     }
   });
 
+  const buildTemplateData = (index: number) => ({
+    category: `Category-${index}`,
+    title: `Template-${index}`,
+    description: `Description for template ${index}`,
+    created_at: '2026-01-01',
+    sub_category: 'Spark',
+    url: `https://example.com/templates/notebook_${index}.ipynb`
+  });
+
   const buildTemplateRow = (
     renderActions: (data: any) => React.JSX.Element,
     index: number
   ) => {
-    const rawData = {
-      category: `Category-${index}`,
-      title: `Template-${index}`,
-      description: `Description for template ${index}`,
-      created_at: '2026-01-01',
-      sub_category: 'Spark',
-      url: `https://example.com/templates/notebook_${index}.ipynb`
-    };
+    const rawData = buildTemplateData(index);
     return {
       category: rawData.category,
       name: rawData.title,
@@ -95,24 +101,50 @@ describe('ListNotebookTemplates Component', () => {
     };
   };
 
-  const mockSingleTemplateAndClick = (
-    index: number,
-    notebookContent: object = { cells: [] }
-  ) => {
+  const mockTemplateList = (count: number) =>
     jest
       .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
       .mockImplementation(
         async (setTemplateList, renderActions, setIsLoading) => {
-          setTemplateList([buildTemplateRow(renderActions, index)]);
+          const rows = Array.from({ length: count }, (_, i) =>
+            buildTemplateRow(renderActions, i + 1)
+          );
+          setTemplateList(rows);
           setIsLoading(false);
         }
       );
 
-    return jest
+  const mockHandleClick = (notebookContent: object = { cells: [] }) =>
+    jest
       .spyOn(NotebookTemplateService, 'handleClickService')
       .mockImplementation(async (template, downloadNotebook) => {
         await downloadNotebook(notebookContent, template.url);
       });
+
+  const renderComponent = async (
+    app = createMockApp().app,
+    factory = createMockFactory()
+  ) => {
+    await act(async () => {
+      root.render(
+        <ListNotebookTemplates
+          app={app}
+          themeManager={mockThemeManager}
+          factory={factory}
+        />
+      );
+    });
+  };
+
+  const clickUseTemplateButton = async () => {
+    const useTemplateBtn = container.querySelector(
+      '.use-template-style'
+    ) as HTMLElement;
+    expect(useTemplateBtn).not.toBeNull();
+
+    await act(async () => {
+      useTemplateBtn.click();
+    });
   };
 
   beforeEach(() => {
@@ -133,152 +165,184 @@ describe('ListNotebookTemplates Component', () => {
     jest.restoreAllMocks();
   });
 
-  const renderComponent = async (
-    app = createMockApp(),
-    factory = createMockFactory()
-  ) => {
-    await act(async () => {
-      root.render(
-        <ListNotebookTemplates
-          app={app}
-          themeManager={mockThemeManager}
-          factory={factory}
-        />
+  describe('rendering states', () => {
+    it('displays loading spinner while templates are being fetched', async () => {
+      jest
+        .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
+        .mockImplementation(async () => undefined);
+
+      await renderComponent();
+
+      expect(container.querySelector('[data-testid="loader"]')).not.toBeNull();
+      expect(container.textContent).toContain('Loading Notebook Templates');
+    });
+
+    it('displays "No rows to display" when template list is empty after loading', async () => {
+      mockTemplateList(0);
+
+      await renderComponent();
+
+      expect(container.querySelector('.no-data-style')?.textContent).toBe(
+        'No rows to display'
+      );
+      expect(container.querySelector('[data-testid="loader"]')).toBeNull();
+    });
+
+    it('renders the global filter section when templates are loaded', async () => {
+      mockTemplateList(1);
+
+      await renderComponent();
+
+      expect(container.querySelector('.filter-cluster-overlay')).not.toBeNull();
+      expect(container.querySelector('.filter-cluster-section')).not.toBeNull();
+    });
+
+    it('renders category, name, description, and action cells for each template row', async () => {
+      mockTemplateList(1);
+
+      await renderComponent();
+
+      const cells = container.querySelectorAll(
+        'td.notebook-template-table-data'
+      );
+      expect(cells.length).toBe(4);
+      expect(cells[0].textContent).toBe('Category-1');
+      expect(cells[1].textContent).toBe('Template-1');
+      expect(cells[2].textContent).toBe('Description for template 1');
+
+      const actionBtn = cells[3].querySelector('.use-template-style');
+      expect(actionBtn?.textContent).toBe('Use this template');
+      expect(actionBtn?.getAttribute('role')).toBe('button');
+      expect(actionBtn?.getAttribute('aria-label')).toBe(
+        'Use notebook template'
       );
     });
-  };
 
-  it('renders loading spinner while templates are being fetched', async () => {
-    jest
-      .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
-      .mockImplementation(async () => undefined);
+    it('does not render PaginationView when template count is 50 or fewer', async () => {
+      mockTemplateList(50);
 
-    await renderComponent();
+      await renderComponent();
 
-    expect(container.querySelector('[data-testid="loader"]')).not.toBeNull();
-    expect(container.textContent).toContain('Loading Notebook Templates');
+      expect(container.querySelector('.pagination-parent-view')).toBeNull();
+    });
+
+    it('renders PaginationView when template count exceeds 50', async () => {
+      mockTemplateList(55);
+
+      await renderComponent();
+
+      expect(container.querySelector('.pagination-parent-view')).not.toBeNull();
+    });
   });
 
-  it('renders "No rows to display" when template list is empty after loading completes', async () => {
-    jest
-      .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
-      .mockImplementation(
-        async (setTemplateList, renderActions, setIsLoading) => {
-          setTemplateList([]);
-          setIsLoading(false);
+  describe('template download and open actions', () => {
+    it('invokes NotebookTemplateService.handleClickService with template data on click', async () => {
+      mockTemplateList(1);
+      const clickSpy = jest
+        .spyOn(NotebookTemplateService, 'handleClickService')
+        .mockResolvedValue(undefined);
+
+      await renderComponent();
+      await clickUseTemplateButton();
+
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+      expect(clickSpy).toHaveBeenCalledWith(
+        buildTemplateData(1),
+        expect.any(Function)
+      );
+    });
+
+    it('saves the notebook to the active local folder path on download', async () => {
+      const mockNotebookContent = { cells: [{ cell_type: 'code' }] };
+      mockTemplateList(1);
+      mockHandleClick(mockNotebookContent);
+      const { app, mockSave } = createMockApp(true);
+
+      await renderComponent(app, createMockFactory('local/folder'));
+      await clickUseTemplateButton();
+
+      expect(mockSave).toHaveBeenCalledTimes(1);
+      expect(mockSave).toHaveBeenCalledWith(
+        `local/folder${path.sep}notebook_1.ipynb`,
+        {
+          type: 'file',
+          format: 'text',
+          content: JSON.stringify(mockNotebookContent)
         }
       );
-
-    await renderComponent();
-
-    expect(container.querySelector('.no-data-style')?.textContent).toBe(
-      'No rows to display'
-    );
-  });
-
-  it('renders templates table and downloads/opens notebook in local path when "Use this template" is clicked', async () => {
-    const mockNotebookContent = { cells: [{ cell_type: 'code' }] };
-    const clickSpy = mockSingleTemplateAndClick(1, mockNotebookContent);
-
-    await renderComponent(
-      createMockApp(true),
-      createMockFactory('local/folder')
-    );
-
-    expect(container.querySelector('.filter-cluster-section')).not.toBeNull();
-
-    const cells = container.querySelectorAll('td.notebook-template-table-data');
-    expect(cells.length).toBe(4);
-    expect(cells[0].textContent).toBe('Category-1');
-    expect(cells[1].textContent).toBe('Template-1');
-    expect(cells[2].textContent).toBe('Description for template 1');
-
-    const useTemplateBtn = container.querySelector(
-      '.use-template-style'
-    ) as HTMLElement;
-    expect(useTemplateBtn).not.toBeNull();
-
-    await act(async () => {
-      useTemplateBtn.click();
     });
 
-    const expectedPath = `local/folder${path.sep}notebook_1.ipynb`;
-    expect(clickSpy).toHaveBeenCalledTimes(1);
-    expect(mockSave).toHaveBeenCalledWith(expectedPath, {
-      type: 'file',
-      format: 'text',
-      content: JSON.stringify(mockNotebookContent)
-    });
-    expect(mockUpdate).toHaveBeenCalledTimes(1);
-    expect(mockExecute).toHaveBeenCalledWith('docmanager:open', {
-      path: expectedPath
-    });
-  });
+    it('opens the saved notebook via docmanager:open after downloading', async () => {
+      mockTemplateList(1);
+      mockHandleClick({ cells: [] });
+      const { app, mockExecute } = createMockApp(true);
 
-  it('downloads notebook to root path when active file browser path is a GCS (gs:) path', async () => {
-    const mockNotebookContent = { cells: [] };
-    mockSingleTemplateAndClick(2, mockNotebookContent);
+      await renderComponent(app, createMockFactory('local/folder'));
+      await clickUseTemplateButton();
 
-    await renderComponent(
-      createMockApp(false),
-      createMockFactory('gs:my-bucket/notebooks')
-    );
-
-    const useTemplateBtn = container.querySelector(
-      '.use-template-style'
-    ) as HTMLElement;
-
-    await act(async () => {
-      useTemplateBtn.click();
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+      expect(mockExecute).toHaveBeenCalledWith('docmanager:open', {
+        path: `local/folder${path.sep}notebook_1.ipynb`
+      });
     });
 
-    const expectedPath = `${path.sep}notebook_2.ipynb`;
-    expect(mockSave).toHaveBeenCalledWith(expectedPath, {
-      type: 'file',
-      format: 'text',
-      content: JSON.stringify(mockNotebookContent)
-    });
-    expect(mockUpdate).not.toHaveBeenCalled();
-    expect(mockExecute).toHaveBeenCalledWith('docmanager:open', {
-      path: expectedPath
-    });
-  });
+    it('refreshes the active shell widget after saving a downloaded notebook', async () => {
+      mockTemplateList(1);
+      mockHandleClick({ cells: [] });
+      const { app, mockUpdate } = createMockApp(true);
 
-  it('logs an error and aborts download when no active file browser widget is found', async () => {
-    mockSingleTemplateAndClick(3);
+      await renderComponent(app, createMockFactory('local/folder'));
+      await clickUseTemplateButton();
 
-    await renderComponent(createMockApp(), createMockFactory(null));
-
-    const useTemplateBtn = container.querySelector(
-      '.use-template-style'
-    ) as HTMLElement;
-
-    await act(async () => {
-      useTemplateBtn.click();
+      expect(mockUpdate).toHaveBeenCalledTimes(1);
     });
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith(
-      'No active file browser widget found.'
-    );
-    expect(mockSave).not.toHaveBeenCalled();
-    expect(mockExecute).not.toHaveBeenCalled();
-  });
+    it('saves and opens the notebook at the workspace root when the browser path is a GCS (gs:) path', async () => {
+      const mockNotebookContent = { cells: [] };
+      mockTemplateList(1);
+      mockHandleClick(mockNotebookContent);
+      const { app, mockSave, mockExecute } = createMockApp(true);
 
-  it('renders PaginationView when templateList contains more than 50 templates', async () => {
-    jest
-      .spyOn(NotebookTemplateService, 'listNotebookTemplateAPIService')
-      .mockImplementation(
-        async (setTemplateList, renderActions, setIsLoading) => {
-          const manyTemplates = Array.from({ length: 55 }, (_, i) =>
-            buildTemplateRow(renderActions, i)
-          );
-          setTemplateList(manyTemplates);
-          setIsLoading(false);
-        }
+      await renderComponent(app, createMockFactory('gs:my-bucket/notebooks'));
+      await clickUseTemplateButton();
+
+      const expectedPath = `${path.sep}notebook_1.ipynb`;
+      expect(mockSave).toHaveBeenCalledWith(expectedPath, {
+        type: 'file',
+        format: 'text',
+        content: JSON.stringify(mockNotebookContent)
+      });
+      expect(mockExecute).toHaveBeenCalledWith('docmanager:open', {
+        path: expectedPath
+      });
+    });
+
+    it('completes download cleanly without updating shell when no active shell widget exists', async () => {
+      mockTemplateList(1);
+      mockHandleClick({ cells: [] });
+      const { app, mockSave, mockUpdate, mockExecute } = createMockApp(false);
+
+      await renderComponent(app, createMockFactory('local/folder'));
+      await clickUseTemplateButton();
+
+      expect(mockSave).toHaveBeenCalledTimes(1);
+      expect(mockUpdate).not.toHaveBeenCalled();
+      expect(mockExecute).toHaveBeenCalledTimes(1);
+    });
+
+    it('logs an error and aborts download when no active file browser widget is found', async () => {
+      mockTemplateList(1);
+      mockHandleClick({ cells: [] });
+      const { app, mockSave, mockExecute } = createMockApp(true);
+
+      await renderComponent(app, createMockFactory(null));
+      await clickUseTemplateButton();
+
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        'No active file browser widget found.'
       );
-
-    await renderComponent();
-
-    expect(container.querySelector('.pagination-parent-view')).not.toBeNull();
+      expect(mockSave).not.toHaveBeenCalled();
+      expect(mockExecute).not.toHaveBeenCalled();
+    });
   });
 });

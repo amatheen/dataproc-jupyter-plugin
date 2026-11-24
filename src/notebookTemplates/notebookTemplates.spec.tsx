@@ -68,6 +68,7 @@ import { checkConfig } from '../utils/utils';
 describe('NotebookTemplates Widget and NotebookTemplatesComponent', () => {
   let container: HTMLDivElement;
   let root: Root;
+
   const mockApp: any = { id: 'mock-app' };
   const mockFactory: any = { id: 'mock-factory' };
   const mockSettingRegistry: any = { id: 'mock-settings' };
@@ -78,6 +79,44 @@ describe('NotebookTemplates Widget and NotebookTemplatesComponent', () => {
       connect: jest.fn(),
       disconnect: jest.fn()
     }
+  };
+
+  const mockPendingConfigCheck = () => {
+    (checkConfig as jest.Mock).mockImplementation(
+      () => new Promise(() => undefined)
+    );
+  };
+
+  const mockResolvedConfigCheck = ({
+    loggedIn = false,
+    configError = false,
+    loginError = false
+  }: {
+    loggedIn?: boolean;
+    configError?: boolean;
+    loginError?: boolean;
+  }) => {
+    (checkConfig as jest.Mock).mockImplementation(
+      async (setLoggedIn, setConfigError, setLoginError) => {
+        await Promise.resolve();
+        setLoggedIn(loggedIn);
+        setConfigError(configError);
+        setLoginError(loginError);
+      }
+    );
+  };
+
+  const renderWidget = async () => {
+    const widget = new NotebookTemplates(
+      mockApp,
+      mockThemeManager,
+      mockFactory,
+      mockSettingRegistry
+    );
+    await act(async () => {
+      root.render(widget.renderInternal());
+    });
+    return widget;
   };
 
   beforeEach(() => {
@@ -95,103 +134,145 @@ describe('NotebookTemplates Widget and NotebookTemplatesComponent', () => {
     jest.restoreAllMocks();
   });
 
-  const renderWidget = async () => {
-    const widget = new NotebookTemplates(
-      mockApp,
-      mockThemeManager,
-      mockFactory,
-      mockSettingRegistry
-    );
-    await act(async () => {
-      root.render(widget.renderInternal());
+  describe('widget initialization', () => {
+    it('stores app, factory, and settingRegistry on the widget instance', () => {
+      const widget = new NotebookTemplates(
+        mockApp,
+        mockThemeManager,
+        mockFactory,
+        mockSettingRegistry
+      );
+
+      expect(widget.app).toBe(mockApp);
+      expect(widget.factory).toBe(mockFactory);
+      expect(widget.settingRegistry).toBe(mockSettingRegistry);
     });
-    return widget;
-  };
 
-  it('shows Loading Templates spinner when not logged in and no errors are present', async () => {
-    (checkConfig as jest.Mock).mockImplementation(
-      () => new Promise(() => undefined)
-    );
+    it('invokes checkConfig with state setter callbacks on mount', async () => {
+      mockPendingConfigCheck();
 
-    await renderWidget();
+      await renderWidget();
 
-    expect(container.querySelector('[data-testid="loader"]')).not.toBeNull();
-    expect(container.textContent).toContain('Loading Templates');
+      expect(checkConfig).toHaveBeenCalledTimes(1);
+      expect(checkConfig).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.any(Function),
+        expect.any(Function)
+      );
+    });
   });
 
-  it('renders LoginErrorComponent when checkConfig sets loginError', async () => {
-    (checkConfig as jest.Mock).mockImplementation(
-      async (setLoggedIn, setConfigError, setLoginError) => {
-        await Promise.resolve();
-        setLoginError(true);
-        setConfigError(false);
-      }
-    );
+  describe('loading state', () => {
+    it('displays the Loading Templates spinner while checkConfig is pending', async () => {
+      mockPendingConfigCheck();
 
-    await renderWidget();
+      await renderWidget();
 
-    const errorEl = container.querySelector('[data-testid="mock-login-error"]');
-    expect(errorEl).not.toBeNull();
-    expect(errorEl?.textContent).toContain('LoginError: true');
-    expect(mockLoginErrorProps).toHaveBeenCalledWith(
-      expect.objectContaining({
-        loginError: true,
-        configError: false,
+      expect(container.querySelector('[data-testid="loader"]')).not.toBeNull();
+      expect(container.textContent).toContain('Loading Templates');
+    });
+
+    it('does not render ListNotebookTemplates or LoginErrorComponent while loading', async () => {
+      mockPendingConfigCheck();
+
+      await renderWidget();
+
+      expect(
+        container.querySelector('[data-testid="mock-list-notebook-templates"]')
+      ).toBeNull();
+      expect(
+        container.querySelector('[data-testid="mock-login-error"]')
+      ).toBeNull();
+    });
+  });
+
+  describe('error states', () => {
+    it('renders LoginErrorComponent when checkConfig reports loginError', async () => {
+      mockResolvedConfigCheck({ loginError: true });
+
+      await renderWidget();
+
+      const errorEl = container.querySelector(
+        '[data-testid="mock-login-error"]'
+      );
+      expect(errorEl).not.toBeNull();
+      expect(errorEl?.textContent).toContain('LoginError: true');
+    });
+
+    it('renders LoginErrorComponent when checkConfig reports configError', async () => {
+      mockResolvedConfigCheck({ configError: true });
+
+      await renderWidget();
+
+      const errorEl = container.querySelector(
+        '[data-testid="mock-login-error"]'
+      );
+      expect(errorEl).not.toBeNull();
+      expect(errorEl?.textContent).toContain('ConfigError: true');
+    });
+
+    it('forwards app, settingRegistry, error flags, and setters to LoginErrorComponent', async () => {
+      mockResolvedConfigCheck({ loginError: true, configError: false });
+
+      await renderWidget();
+
+      expect(mockLoginErrorProps).toHaveBeenCalledWith(
+        expect.objectContaining({
+          loginError: true,
+          configError: false,
+          setLoginError: expect.any(Function),
+          setConfigError: expect.any(Function),
+          settingRegistry: mockSettingRegistry,
+          app: mockApp
+        })
+      );
+    });
+
+    it('hides the loading spinner and ListNotebookTemplates when an error occurs', async () => {
+      mockResolvedConfigCheck({ configError: true });
+
+      await renderWidget();
+
+      expect(container.querySelector('[data-testid="loader"]')).toBeNull();
+      expect(
+        container.querySelector('[data-testid="mock-list-notebook-templates"]')
+      ).toBeNull();
+    });
+  });
+
+  describe('authenticated state', () => {
+    it('renders ListNotebookTemplates inside the tablist container when authenticated', async () => {
+      mockResolvedConfigCheck({ loggedIn: true });
+
+      await renderWidget();
+
+      expect(container.querySelector('[role="tablist"]')).not.toBeNull();
+      expect(
+        container.querySelector('[data-testid="mock-list-notebook-templates"]')
+      ).not.toBeNull();
+    });
+
+    it('forwards app, themeManager, and factory props to ListNotebookTemplates', async () => {
+      mockResolvedConfigCheck({ loggedIn: true });
+
+      await renderWidget();
+
+      expect(mockListNotebookTemplatesProps).toHaveBeenCalledWith({
         app: mockApp,
-        settingRegistry: mockSettingRegistry
-      })
-    );
-    expect(
-      container.querySelector('[data-testid="mock-list-notebook-templates"]')
-    ).toBeNull();
-  });
-
-  it('renders LoginErrorComponent when checkConfig sets configError', async () => {
-    (checkConfig as jest.Mock).mockImplementation(
-      async (setLoggedIn, setConfigError, setLoginError) => {
-        await Promise.resolve();
-        setLoginError(false);
-        setConfigError(true);
-      }
-    );
-
-    await renderWidget();
-
-    const errorEl = container.querySelector('[data-testid="mock-login-error"]');
-    expect(errorEl).not.toBeNull();
-    expect(errorEl?.textContent).toContain('ConfigError: true');
-    expect(mockLoginErrorProps).toHaveBeenCalledWith(
-      expect.objectContaining({
-        loginError: false,
-        configError: true,
-        app: mockApp,
-        settingRegistry: mockSettingRegistry
-      })
-    );
-    expect(
-      container.querySelector('[data-testid="mock-list-notebook-templates"]')
-    ).toBeNull();
-  });
-
-  it('renders ListNotebookTemplates when authenticated without errors', async () => {
-    (checkConfig as jest.Mock).mockImplementation(async setLoggedIn => {
-      await Promise.resolve();
-      setLoggedIn(true);
+        themeManager: mockThemeManager,
+        factory: mockFactory
+      });
     });
 
-    await renderWidget();
+    it('hides the loading spinner and LoginErrorComponent when authenticated', async () => {
+      mockResolvedConfigCheck({ loggedIn: true });
 
-    expect(
-      container.querySelector('[data-testid="mock-list-notebook-templates"]')
-    ).not.toBeNull();
-    expect(mockListNotebookTemplatesProps).toHaveBeenCalledWith({
-      app: mockApp,
-      themeManager: mockThemeManager,
-      factory: mockFactory
+      await renderWidget();
+
+      expect(container.querySelector('[data-testid="loader"]')).toBeNull();
+      expect(
+        container.querySelector('[data-testid="mock-login-error"]')
+      ).toBeNull();
     });
-    expect(container.querySelector('[role="tablist"]')).not.toBeNull();
-    expect(
-      container.querySelector('[data-testid="mock-login-error"]')
-    ).toBeNull();
   });
 });
