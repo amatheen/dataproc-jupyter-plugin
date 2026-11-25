@@ -15,6 +15,27 @@
  * limitations under the License.
  */
 
+import React from 'react';
+import { setImmediate } from 'timers';
+import { Notification } from '@jupyterlab/apputils';
+import { SessionService } from './sessionService';
+import {
+  HTTP_METHOD,
+  STATUS_ACTIVE,
+  STATUS_FAIL,
+  STATUS_TERMINATED
+} from '../utils/const';
+import {
+  IAuthCredentials,
+  authApi,
+  loggedFetch,
+  authenticatedFetch,
+  elapsedTime,
+  handleApiError
+} from '../utils/utils';
+import { DataprocLoggingService, LOG_LEVEL } from '../utils/loggingService';
+
+// Mock ../handler/handler so module-level gcpServiceUrls resolves cleanly in tests.
 jest.mock('../handler/handler', () => ({
   requestAPI: jest.fn().mockResolvedValue({
     dataproc_url: 'https://dataproc.googleapis.com/',
@@ -54,29 +75,7 @@ jest.mock('../utils/utils', () => ({
   handleApiError: jest.fn()
 }));
 
-import React from 'react';
-import { Notification } from '@jupyterlab/apputils';
-import { SessionService } from './sessionService';
-import {
-  HTTP_METHOD,
-  STATUS_ACTIVE,
-  STATUS_FAIL,
-  STATUS_TERMINATED
-} from '../utils/const';
-import {
-  authApi,
-  loggedFetch,
-  authenticatedFetch,
-  elapsedTime,
-  handleApiError
-} from '../utils/utils';
-import { DataprocLoggingService, LOG_LEVEL } from '../utils/loggingService';
-
-const flushPromises = async () => {
-  for (let i = 0; i < 6; i++) {
-    await new Promise<void>(resolve => queueMicrotask(resolve));
-  }
-};
+const flushPromises = () => new Promise<void>(resolve => setImmediate(resolve));
 
 const mockJsonResponse = (payload: unknown) => ({
   json: jest.fn().mockResolvedValue(payload)
@@ -87,7 +86,7 @@ const mockNestedTerminateResponse = (payload: unknown) => ({
 });
 
 describe('SessionService', () => {
-  const mockCredentials = {
+  const mockCredentials: IAuthCredentials = {
     project_id: 'test-project',
     region_id: 'us-central1',
     access_token: 'mock-token',
@@ -99,7 +98,9 @@ describe('SessionService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+    consoleLogSpy = jest
+      .spyOn(console, 'log')
+      .mockImplementation(() => undefined);
     (authApi as jest.Mock).mockResolvedValue(mockCredentials);
   });
 
@@ -236,26 +237,31 @@ describe('SessionService', () => {
       );
     });
 
-    test.each([
-      [
-        'outer response.json() rejection',
-        () => ({ json: jest.fn().mockRejectedValue(new Error('Outer parse')) })
-      ],
-      [
-        'inner responseResult.json() rejection',
-        () => ({
-          json: jest.fn().mockResolvedValue({
-            json: jest.fn().mockRejectedValue(new Error('Inner parse'))
-          })
-        })
-      ]
-    ])('catches %s and logs error to console', async (_label, buildMock) => {
-      (loggedFetch as jest.Mock).mockResolvedValue(buildMock());
+    it('catches outer response.json() rejection and logs the exact error', async () => {
+      const parseError = new Error('Outer parse');
+      (loggedFetch as jest.Mock).mockResolvedValue({
+        json: jest.fn().mockRejectedValue(parseError)
+      });
 
       await SessionService.terminateSessionAPI('session-2');
       await flushPromises();
 
-      expect(consoleLogSpy).toHaveBeenCalledWith(expect.any(Error));
+      expect(consoleLogSpy).toHaveBeenCalledWith(parseError);
+      expect(Notification.emit).not.toHaveBeenCalled();
+    });
+
+    it('catches inner responseResult.json() rejection and logs the exact error', async () => {
+      const parseError = new Error('Inner parse');
+      (loggedFetch as jest.Mock).mockResolvedValue({
+        json: jest.fn().mockResolvedValue({
+          json: jest.fn().mockRejectedValue(parseError)
+        })
+      });
+
+      await SessionService.terminateSessionAPI('session-2');
+      await flushPromises();
+
+      expect(consoleLogSpy).toHaveBeenCalledWith(parseError);
       expect(Notification.emit).not.toHaveBeenCalled();
     });
 
@@ -285,7 +291,7 @@ describe('SessionService', () => {
       setSessionInfo: jest.fn()
     });
 
-    it('populates session info and formatted labels on successful response', async () => {
+    it('fetches session details, sets formatted labels, and clears loading state on success', async () => {
       const cb = createCallbacks();
       const payload = {
         name: 'projects/test-project/locations/us-central1/sessions/sess-1',
@@ -319,11 +325,33 @@ describe('SessionService', () => {
       expect(Notification.emit).not.toHaveBeenCalled();
     });
 
+    it('sets empty label list when session response does not include labels', async () => {
+      const cb = createCallbacks();
+      const payload = {
+        name: 'projects/test-project/locations/us-central1/sessions/sess-no-labels',
+        state: STATUS_ACTIVE
+      };
+      (authenticatedFetch as jest.Mock).mockResolvedValue(
+        mockJsonResponse(payload)
+      );
+
+      await SessionService.getSessionDetailsService(
+        'sess-no-labels',
+        cb.setErrorView,
+        cb.setIsLoading,
+        cb.setLabelDetail,
+        cb.setSessionInfo
+      );
+
+      expect(cb.setLabelDetail).toHaveBeenCalledWith([]);
+      expect(cb.setIsLoading).toHaveBeenCalledWith(false);
+    });
+
     test.each([
       [404, 'Session not found', true],
       [500, 'Internal error', false]
     ])(
-      'handles API error code %i (expectErrorView=%s) with empty labels fallback',
+      'handles API error code %i (expectErrorView=%s) and emits notification',
       async (code, message, expectErrorView) => {
         const cb = createCallbacks();
         (authenticatedFetch as jest.Mock).mockResolvedValue(
@@ -353,7 +381,7 @@ describe('SessionService', () => {
       }
     );
 
-    it('handles authenticatedFetch exceptions by stopping loader, logging, and notifying', async () => {
+    it('stops loader, logs error, and emits notification when authenticatedFetch rejects', async () => {
       const cb = createCallbacks();
       (authenticatedFetch as jest.Mock).mockRejectedValue(
         new Error('Connection refused')
@@ -392,53 +420,10 @@ describe('SessionService', () => {
       setEnableLink: jest.fn()
     });
 
-    it('paginates across nextPageToken, sorts descending by createTime, and maps engines & elapsedTime', async () => {
-      const cb = createListCallbacks();
-      const page1 = {
-        sessions: [
-          {
-            name: 'projects/test-project/locations/us-central1/sessions/sess-older',
-            state: STATUS_TERMINATED,
-            createTime: '2026-01-01T10:00:00Z',
-            stateTime: '2026-01-01T10:05:10Z',
-            creator: 'alice@example.com'
-          }
-        ],
-        nextPageToken: 'token-page-2'
-      };
-      const page2 = {
-        sessions: [
-          {
-            name: 'projects/test-project/locations/us-east1/sessions/sess-newer',
-            state: STATUS_ACTIVE,
-            createTime: '2026-01-02T12:00:00Z',
-            stateTime: '2026-01-02T12:01:00Z',
-            creator: 'bob@example.com',
-            runtimeConfig: {
-              properties: {
-                'spark:spark.dataproc.engine': 'lightningEngine'
-              }
-            }
-          },
-          {
-            name: 'projects/test-project/locations/us-west1/sessions/sess-mid-failed',
-            state: STATUS_FAIL,
-            createTime: '2026-01-01T15:00:00Z',
-            stateTime: '2026-01-01T15:05:10Z',
-            creator: 'carol@example.com',
-            runtimeConfig: {
-              properties: {
-                'spark:spark.dataproc.engine': 'unmappedEngine'
-              }
-            }
-          }
-        ]
-      };
-
-      (authenticatedFetch as jest.Mock)
-        .mockResolvedValueOnce(mockJsonResponse(page1))
-        .mockResolvedValueOnce(mockJsonResponse(page2));
-
+    const invokeListService = async (
+      cb = createListCallbacks(),
+      credentials: IAuthCredentials | undefined = mockCredentials
+    ) => {
       await SessionService.listSessionsAPIService(
         cb.renderActions,
         cb.setIsLoading,
@@ -446,17 +431,77 @@ describe('SessionService', () => {
         cb.setApiDialogOpen,
         cb.setPollingDisable,
         cb.setEnableLink,
-        mockCredentials
+        credentials
       );
-      await flushPromises();
+      return cb;
+    };
 
-      expect(authenticatedFetch).toHaveBeenCalledTimes(2);
-      expect(authenticatedFetch).toHaveBeenNthCalledWith(1, {
+    const createRawSession = (overrides: Record<string, unknown> = {}) => ({
+      name: 'projects/test-project/locations/us-central1/sessions/sess-1',
+      state: STATUS_ACTIVE,
+      createTime: '2026-01-01T10:00:00Z',
+      stateTime: '2026-01-01T10:05:10Z',
+      creator: 'alice@example.com',
+      ...overrides
+    });
+
+    it('fetches sessions with default query params and transforms row fields', async () => {
+      const rawSession = createRawSession();
+      (authenticatedFetch as jest.Mock).mockResolvedValue(
+        mockJsonResponse({ sessions: [rawSession] })
+      );
+
+      const cb = await invokeListService();
+
+      expect(authenticatedFetch).toHaveBeenCalledWith({
         uri: 'sessions',
         method: HTTP_METHOD.GET,
         regionIdentifier: 'locations',
         queryParams: new URLSearchParams({ pageSize: '1000', pageToken: '' })
       });
+      expect(cb.renderActions).toHaveBeenCalledWith(rawSession);
+      expect(cb.setSessionsList).toHaveBeenCalledWith([
+        expect.objectContaining({
+          sessionID: 'sess-1',
+          status: STATUS_ACTIVE,
+          location: 'us-central1',
+          engine: 'Default',
+          creator: 'alice@example.com',
+          creationTime: 'formatted:2026-01-01T10:00:00Z',
+          elapsedTime: ''
+        })
+      ]);
+      expect(cb.setIsLoading).toHaveBeenCalledWith(false);
+    });
+
+    it('paginates recursively when nextPageToken is returned and merges all pages', async () => {
+      (authenticatedFetch as jest.Mock)
+        .mockResolvedValueOnce(
+          mockJsonResponse({
+            sessions: [
+              createRawSession({
+                name: 'projects/test-project/locations/us-central1/sessions/sess-p1',
+                createTime: '2026-01-01T10:00:00Z'
+              })
+            ],
+            nextPageToken: 'token-page-2'
+          })
+        )
+        .mockResolvedValueOnce(
+          mockJsonResponse({
+            sessions: [
+              createRawSession({
+                name: 'projects/test-project/locations/us-east1/sessions/sess-p2',
+                createTime: '2026-01-02T10:00:00Z'
+              })
+            ]
+          })
+        );
+
+      const cb = await invokeListService();
+      await flushPromises();
+
+      expect(authenticatedFetch).toHaveBeenCalledTimes(2);
       expect(authenticatedFetch).toHaveBeenNthCalledWith(2, {
         uri: 'sessions',
         method: HTTP_METHOD.GET,
@@ -466,35 +511,88 @@ describe('SessionService', () => {
           pageToken: 'token-page-2'
         })
       });
-
-      expect(elapsedTime).toHaveBeenCalledTimes(2);
-      expect(cb.setSessionsList).toHaveBeenCalledWith([
-        expect.objectContaining({
-          sessionID: 'sess-newer',
-          status: STATUS_ACTIVE,
-          location: 'us-east1',
-          engine: 'Lightning Engine',
-          creator: 'bob@example.com',
-          creationTime: 'formatted:2026-01-02T12:00:00Z',
-          elapsedTime: ''
-        }),
-        expect.objectContaining({
-          sessionID: 'sess-mid-failed',
-          status: STATUS_FAIL,
-          location: 'us-west1',
-          engine: undefined,
-          elapsedTime: '5m 10s'
-        }),
-        expect.objectContaining({
-          sessionID: 'sess-older',
-          status: STATUS_TERMINATED,
-          location: 'us-central1',
-          engine: 'Default',
-          elapsedTime: '5m 10s'
-        })
-      ]);
-      expect(cb.setIsLoading).toHaveBeenCalledWith(false);
+      expect(cb.setSessionsList).toHaveBeenCalledTimes(1);
+      expect(cb.setSessionsList.mock.calls[0][0]).toHaveLength(2);
     });
+
+    it('sorts sessions in descending order by createTime', async () => {
+      (authenticatedFetch as jest.Mock).mockResolvedValue(
+        mockJsonResponse({
+          sessions: [
+            createRawSession({
+              name: 'projects/p/locations/us-central1/sessions/sess-oldest',
+              createTime: '2026-01-01T08:00:00Z'
+            }),
+            createRawSession({
+              name: 'projects/p/locations/us-central1/sessions/sess-newest',
+              createTime: '2026-01-03T08:00:00Z'
+            }),
+            createRawSession({
+              name: 'projects/p/locations/us-central1/sessions/sess-middle',
+              createTime: '2026-01-02T08:00:00Z'
+            })
+          ]
+        })
+      );
+
+      const cb = await invokeListService();
+
+      const ids = cb.setSessionsList.mock.calls[0][0].map(
+        (s: { sessionID: string }) => s.sessionID
+      );
+      expect(ids).toEqual(['sess-newest', 'sess-middle', 'sess-oldest']);
+    });
+
+    test.each([
+      [STATUS_TERMINATED, '5m 10s', 1],
+      [STATUS_FAIL, '5m 10s', 1],
+      [STATUS_ACTIVE, '', 0]
+    ])(
+      'computes elapsedTime="%s" for state %s (elapsedTime calls=%i)',
+      async (state, expectedElapsed, expectedCalls) => {
+        (authenticatedFetch as jest.Mock).mockResolvedValue(
+          mockJsonResponse({
+            sessions: [createRawSession({ state })]
+          })
+        );
+
+        const cb = await invokeListService();
+
+        expect(elapsedTime).toHaveBeenCalledTimes(expectedCalls);
+        expect(cb.setSessionsList).toHaveBeenCalledWith([
+          expect.objectContaining({ elapsedTime: expectedElapsed })
+        ]);
+      }
+    );
+
+    test.each([
+      [
+        'lightningEngine property',
+        { properties: { 'spark:spark.dataproc.engine': 'lightningEngine' } },
+        'Lightning Engine'
+      ],
+      ['omitted runtimeConfig', undefined, 'Default'],
+      [
+        'unmapped engine value',
+        { properties: { 'spark:spark.dataproc.engine': 'customEngine' } },
+        undefined
+      ]
+    ])(
+      'maps engine display name for %s',
+      async (_label, runtimeConfig, expectedEngine) => {
+        (authenticatedFetch as jest.Mock).mockResolvedValue(
+          mockJsonResponse({
+            sessions: [createRawSession({ runtimeConfig })]
+          })
+        );
+
+        const cb = await invokeListService();
+
+        expect(cb.setSessionsList).toHaveBeenCalledWith([
+          expect.objectContaining({ engine: expectedEngine })
+        ]);
+      }
+    );
 
     test.each([
       ['empty object without sessions', {}],
@@ -502,20 +600,11 @@ describe('SessionService', () => {
     ])(
       'sets empty session list without calling handleApiError for %s',
       async (_label, payload) => {
-        const cb = createListCallbacks();
         (authenticatedFetch as jest.Mock).mockResolvedValue(
           mockJsonResponse(payload)
         );
 
-        await SessionService.listSessionsAPIService(
-          cb.renderActions,
-          cb.setIsLoading,
-          cb.setSessionsList,
-          cb.setApiDialogOpen,
-          cb.setPollingDisable,
-          cb.setEnableLink,
-          mockCredentials
-        );
+        const cb = await invokeListService();
 
         expect(cb.setSessionsList).toHaveBeenCalledWith([]);
         expect(cb.setIsLoading).toHaveBeenCalledWith(false);
@@ -524,7 +613,6 @@ describe('SessionService', () => {
     );
 
     it('sets empty list and delegates to handleApiError when response contains error.code', async () => {
-      const cb = createListCallbacks();
       const errorResponse = {
         error: { code: 403, message: 'Dataproc API has not been used' }
       };
@@ -532,15 +620,7 @@ describe('SessionService', () => {
         mockJsonResponse(errorResponse)
       );
 
-      await SessionService.listSessionsAPIService(
-        cb.renderActions,
-        cb.setIsLoading,
-        cb.setSessionsList,
-        cb.setApiDialogOpen,
-        cb.setPollingDisable,
-        cb.setEnableLink,
-        mockCredentials
-      );
+      const cb = await invokeListService();
 
       expect(cb.setSessionsList).toHaveBeenCalledWith([]);
       expect(cb.setIsLoading).toHaveBeenCalledWith(false);
@@ -555,19 +635,11 @@ describe('SessionService', () => {
     });
 
     it('logs error and emits notification when authenticatedFetch throws', async () => {
-      const cb = createListCallbacks();
       (authenticatedFetch as jest.Mock).mockRejectedValue(
         new Error('Fetch failed')
       );
 
-      await SessionService.listSessionsAPIService(
-        cb.renderActions,
-        cb.setIsLoading,
-        cb.setSessionsList,
-        cb.setApiDialogOpen,
-        cb.setPollingDisable,
-        cb.setEnableLink
-      );
+      const cb = await invokeListService(createListCallbacks(), undefined);
 
       expect(cb.setIsLoading).toHaveBeenCalledWith(false);
       expect(DataprocLoggingService.log).toHaveBeenCalledWith(
